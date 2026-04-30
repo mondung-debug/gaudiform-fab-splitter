@@ -1,0 +1,45 @@
+{
+    "_comment": "Z 범위를 수동으로 지정해서 분리하는 샘플 (floor_z_auto: false)",
+    "tasks": [
+        {
+            "common": {
+                "scheduling_file_max_count": 8,
+                "input_path": "C:/project/usd_files",
+                "input_extension": ".usd",
+                "output_directory": "C:/project/output",
+                "recursive": true
+            },
+            "scheduler": {
+                "resume": { "enable": false },
+                "convert": { "enable": false },
+                "scene_optimizer": { "enable": false },
+                "post_processing": {
+                    "enable": true,
+                    "operations": [
+                        {
+                            "enable": true,
+                            "operation": "external",
+                            "script": "C:/path/to/gaudiform-fab-splitter/gaudiform/core/fab_splitter/fab_splitter_operation.py",
+                            "params": {
+                                "target_floor_name":    "9th FL",
+                                "floor_z_auto":         false,
+                                "floor_z_min":          74.0,
+                                "floor_z_max":          82.0,
+                                "target_category":      "Mechanical Equipment",
+                                "util_categories":      ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+                                "output_prefix_eqp":    "EQP_",
+                                "output_prefix_util":   "UTIL_",
+                                "output_prefix_infra":  "INFRA_",
+                                "output_ext":           ".usd",
+                                "split_output_folders": true
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "log": { "enable": true, "directory": "C:/project/logs" },
+    "cadConverterConfig": {},
+    "sceneOptimizerConfig": {}
+}

@@ -1,0 +1,57 @@
+{
+    "_comment": "rvt 변환 → FAB 분리 → xform reset 순서로 실행하는 샘플 (fab-splitter + xform-reset 연계)",
+    "tasks": [
+        {
+            "common": {
+                "scheduling_file_max_count": 8,
+                "input_path": "C:/project/rvt_files",
+                "input_extension": ".rvt",
+                "output_directory": "C:/project/output",
+                "recursive": true
+            },
+            "scheduler": {
+                "resume": { "enable": false },
+                "convert": {
+                    "enable": true,
+                    "type": "cad_converter"
+                },
+                "scene_optimizer": { "enable": false },
+                "post_processing": {
+                    "enable": true,
+                    "operations": [
+                        {
+                            "enable": true,
+                            "operation": "external",
+                            "script": "C:/path/to/gaudiform-fab-splitter/gaudiform/core/fab_splitter/fab_splitter_operation.py",
+                            "params": {
+                                "target_floor_name":    "9th FL",
+                                "floor_z_auto":         true,
+                                "floor_z_min":          0.0,
+                                "floor_z_max":          0.0,
+                                "target_category":      "Mechanical Equipment",
+                                "util_categories":      ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+                                "output_prefix_eqp":    "EQP_",
+                                "output_prefix_util":   "UTIL_",
+                                "output_prefix_infra":  "INFRA_",
+                                "output_ext":           ".usd",
+                                "split_output_folders": true
+                            }
+                        },
+                        {
+                            "enable": true,
+                            "operation": "external",
+                            "script": "C:/path/to/gaudiform-xform-reset/gaudiform/core/xform_reset/xform_reset_operation.py",
+                            "params": {
+                                "remove_mode": false,
+                                "only_names":  []
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "log": { "enable": true, "directory": "C:/project/logs" },
+    "cadConverterConfig": {},
+    "sceneOptimizerConfig": {}
+}
