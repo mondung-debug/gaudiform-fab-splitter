@@ -294,20 +294,19 @@ def process_stage(
         marker = " ← TARGET" if name == cfg["target_floor_name"] else ""
         log(f"  [FLOOR] {name}: Z={z:.3f}m{marker}")
 
-    if cfg.get("floor_z_auto") or (cfg["floor_z_min"] == 0 and cfg["floor_z_max"] == 0):
+    if cfg.get("floor_z_auto"):
         target_z = levels.get(cfg["target_floor_name"])
         if target_z is None:
             log(f"  [WARN] '{cfg['target_floor_name']}' not found in stage")
             return 0, 0, 0
         sorted_z = sorted(levels.values())
         idx      = sorted_z.index(target_z)
-        z_min    = (sorted_z[idx-1] + target_z) / 2 if idx > 0 else target_z - 1.0
-        z_max    = (target_z + sorted_z[idx+1]) / 2 if idx+1 < len(sorted_z) \
-                   else target_z + 10.0
+        z_min    = target_z
+        z_max    = sorted_z[idx + 1] if idx + 1 < len(sorted_z) else target_z + 10.0
         cfg = dict(cfg)
         cfg["floor_z_min"] = z_min
         cfg["floor_z_max"] = z_max
-        log(f"  [AUTO] height range: [{z_min:.3f}, {z_max:.3f}]")
+        log(f"  [AUTO] '{cfg['target_floor_name']}' Z={target_z:.3f} → range: [{z_min:.3f}, {z_max:.3f}]")
     else:
         log(f"  [CONFIG] height range: [{cfg['floor_z_min']:.1f}, {cfg['floor_z_max']:.1f}]")
 
