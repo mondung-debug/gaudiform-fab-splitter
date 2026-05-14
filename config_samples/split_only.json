@@ -1,5 +1,5 @@
 {
-    "_comment": "이미 변환된 USD 파일에 FAB 분리만 적용하는 샘플",
+    "_comment": "이미 변환된 USD 파일에 FAB 분리만 적용하는 샘플 (floor_z_auto=true: target_floor_name 층 Z = z_min, 다음 층 Z = z_max 자동 계산)",
     "tasks": [
         {
             "common": {

@@ -1,5 +1,5 @@
 {
-    "_comment": "Z 범위를 수동으로 지정해서 분리하는 샘플 (floor_z_auto: false)",
+    "_comment": "Z 범위를 수동으로 지정해서 분리하는 샘플 (floor_z_auto=false: target_floor_name 무시, floor_z_min~floor_z_max 직접 사용)",
     "tasks": [
         {
             "common": {
