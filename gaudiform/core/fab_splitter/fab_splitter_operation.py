@@ -21,7 +21,9 @@ output_directory 하위에 저장합니다.
             "output_prefix_util":   "UTIL_",
             "output_prefix_infra":  "INFRA_",
             "output_ext":           ".usd",
-            "split_output_folders": true
+            "split_output_folders": true,
+            "normalize_sk_eq_id":   true,
+            "log_sk_eq_id_fix":     true
           }
         }
       ]

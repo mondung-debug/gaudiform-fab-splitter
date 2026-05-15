@@ -7,6 +7,7 @@ pxr 단독으로 동작 (Kit/Omniverse 불필요).
 from __future__ import annotations
 
 import os
+import re
 
 from pxr import Sdf, Usd, UsdGeom
 
@@ -20,21 +21,30 @@ ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 # ── Default config ─────────────────────────────────────────────────────────────
 
 DEFAULT_CFG = {
-    "target_floor_name":    "9th FL",
-    "floor_z_min":          0.0,
-    "floor_z_max":          0.0,
-    "floor_z_auto":         True,
-    "target_category":      "Mechanical Equipment",
-    "util_categories":      ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
-    "output_prefix_eqp":    "EQP_",
-    "output_prefix_util":   "UTIL_",
-    "output_prefix_infra":  "INFRA_",
-    "output_ext":           ".usd",
-    "split_output_folders": True,
+    "target_floor_name":      "9th FL",
+    "floor_z_min":            0.0,
+    "floor_z_max":            0.0,
+    "floor_z_auto":           True,
+    "target_category":        "Mechanical Equipment",
+    "util_categories":        ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+    "output_prefix_eqp":      "EQP_",
+    "output_prefix_util":     "UTIL_",
+    "output_prefix_infra":    "INFRA_",
+    "output_ext":             ".usd",
+    "split_output_folders":   True,
+    "normalize_sk_eq_id":     True,   # _숫자 suffix 자동 제거 (abc123_1 → abc123)
+    "log_sk_eq_id_fix":       True,   # 수정된 SK_EQ_ID 로그 출력
 }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+_SK_EQ_ID_SUFFIX_RE = re.compile(r'_\d+$')
+
+def _normalize_sk_eq_id(raw_id: str) -> str:
+    """SK_EQ_ID 끝의 _숫자 suffix 제거. ex) abc123_1 → abc123"""
+    return _SK_EQ_ID_SUFFIX_RE.sub('', raw_id)
+
 
 def _get_attr(prim, attr_name):
     attr = prim.GetAttribute(attr_name)
@@ -92,10 +102,13 @@ def collect_components(
     target_cat   = cfg["target_category"]
     util_cat_set = set(cfg.get("util_categories", []))
 
+    do_normalize  = cfg.get("normalize_sk_eq_id", True)
+    do_log_fix    = cfg.get("log_sk_eq_id_fix", True)
+
     eqp_dict: dict  = {}
     util_dict: dict = {}
     stats = {"total": 0, "eqp": 0, "util_cat": 0,
-             "util_height": 0, "infra_no_id": 0, "infra_other": 0}
+             "util_height": 0, "infra_no_id": 0, "infra_other": 0, "id_fixed": 0}
 
     for prim in stage.TraverseAll():
         if Usd.ModelAPI(prim).GetKind() != "component":
@@ -106,6 +119,15 @@ def collect_components(
         if not sk_eq_id:
             stats["infra_no_id"] += 1
             continue
+
+        sk_eq_id = str(sk_eq_id)
+        if do_normalize:
+            normalized = _normalize_sk_eq_id(sk_eq_id)
+            if normalized != sk_eq_id:
+                stats["id_fixed"] += 1
+                if do_log_fix:
+                    log(f"  [SK_EQ_ID FIX] {prim.GetPath().name}: '{sk_eq_id}' -> '{normalized}'")
+                sk_eq_id = normalized
 
         cat        = _get_attr(prim, ATTR_CATEGORY)
         level_prim = _level_ancestor(prim)
@@ -130,7 +152,8 @@ def collect_components(
     log(f"  Collection: total={stats['total']}, "
         f"EQP={stats['eqp']} ({len(eqp_dict)} IDs), "
         f"UTIL_cat={stats['util_cat']}, UTIL_height={stats['util_height']}, "
-        f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}")
+        f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}, "
+        f"ID_fixed={stats['id_fixed']}")
     return eqp_dict, util_dict
 
 
