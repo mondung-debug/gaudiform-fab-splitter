@@ -39,11 +39,17 @@ DEFAULT_CFG = {
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_SK_EQ_ID_SUFFIX_RE = re.compile(r'_\d+$')
+_SK_EQ_ID_SUFFIX_RE  = re.compile(r'_\d+$')
+_UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|\u20a9]')  # ₩ = \u20a9
 
 def _normalize_sk_eq_id(raw_id: str) -> str:
     """SK_EQ_ID 끝의 _숫자 suffix 제거. ex) abc123_1 → abc123"""
     return _SK_EQ_ID_SUFFIX_RE.sub('', raw_id)
+
+
+def _sanitize_filename(s: str) -> str:
+    """파일명에 사용 불가한 문자를 _ 로 치환."""
+    return _UNSAFE_FILENAME_RE.sub('_', s)
 
 
 def _get_attr(prim, attr_name):
@@ -222,9 +228,11 @@ def _all_prim_specs(layer):
     return result
 
 
-def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> str:
+def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> tuple[str, str]:
+    """Returns (output_path, safe_id). safe_id == sk_eq_id if no sanitization needed."""
     src_layer   = src_stage.GetRootLayer()
-    output_path = os.path.join(output_dir, f"{prefix}{sk_eq_id}{cfg['output_ext']}")
+    safe_id     = _sanitize_filename(sk_eq_id)
+    output_path = os.path.join(output_dir, f"{prefix}{safe_id}{cfg['output_ext']}")
     dst_layer   = Sdf.Layer.CreateAnonymous()
     _copy_stage_metadata(src_layer, dst_layer)
     for comp_path in component_paths:
@@ -239,7 +247,7 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
             except Exception:
                 pass
     dst_layer.Export(output_path)
-    return output_path
+    return output_path, safe_id
 
 
 def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[str, int]:
@@ -336,18 +344,36 @@ def process_stage(
     eqp_dict, util_dict = collect_components(stage, bbox_cache, cfg, log=log)
 
     # EQP 저장
+    sanitize_log: list[tuple[str, str, str]] = []  # (category, original, safe)
     eqp_out_dir = _get_output_dir(output_directory, "EQP", src_basename, cfg)
     for sk_eq_id, paths in sorted(eqp_dict.items()):
-        out = export_group(stage, sk_eq_id, paths, eqp_out_dir,
-                           cfg["output_prefix_eqp"], cfg)
-        log(f"  [EQP] {sk_eq_id} ({len(paths)} prims) → {out}")
+        out, safe_id = export_group(stage, sk_eq_id, paths, eqp_out_dir,
+                                    cfg["output_prefix_eqp"], cfg)
+        if safe_id != sk_eq_id:
+            sanitize_log.append(("EQP", sk_eq_id, safe_id))
+            log(f"  [EQP] {sk_eq_id} → (sanitized: {safe_id}) ({len(paths)} prims) → {out}")
+        else:
+            log(f"  [EQP] {sk_eq_id} ({len(paths)} prims) → {out}")
 
     # UTIL 저장
     util_out_dir = _get_output_dir(output_directory, "UTIL", src_basename, cfg)
     for sk_eq_id, paths in sorted(util_dict.items()):
-        out = export_group(stage, sk_eq_id, paths, util_out_dir,
-                           cfg["output_prefix_util"], cfg)
-        log(f"  [UTIL] {sk_eq_id} ({len(paths)} prims) → {out}")
+        out, safe_id = export_group(stage, sk_eq_id, paths, util_out_dir,
+                                    cfg["output_prefix_util"], cfg)
+        if safe_id != sk_eq_id:
+            sanitize_log.append(("UTIL", sk_eq_id, safe_id))
+            log(f"  [UTIL] {sk_eq_id} → (sanitized: {safe_id}) ({len(paths)} prims) → {out}")
+        else:
+            log(f"  [UTIL] {sk_eq_id} ({len(paths)} prims) → {out}")
+
+    # sanitize 로그 파일 저장
+    if sanitize_log:
+        log_path = os.path.join(output_directory, f"sanitize_log_{src_basename}.tsv")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("category\toriginal_sk_eq_id\tsanitized_filename\n")
+            for cat, orig, safe in sanitize_log:
+                f.write(f"{cat}\t{orig}\t{safe}\n")
+        log(f"  [SANITIZE LOG] {len(sanitize_log)}건 기록 → {log_path}")
 
     # INFRA 저장
     infra_out_dir = _get_output_dir(output_directory, "INFRA", src_basename, cfg)
