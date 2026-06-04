@@ -6,6 +6,7 @@ pxr 단독으로 동작 (Kit/Omniverse 불필요).
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 
@@ -216,17 +217,6 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
             pass
 
 
-def _all_prim_specs(layer):
-    result = []
-    def _walk(spec):
-        for child in list(spec.nameChildren):
-            result.append(child)
-            _walk(child)
-    for root in layer.rootPrims:
-        result.append(root)
-        _walk(root)
-    return result
-
 
 def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> tuple[str, str]:
     """Returns (output_path, safe_id). safe_id == sk_eq_id if no sanitization needed."""
@@ -247,7 +237,37 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
             except Exception:
                 pass
     dst_layer.Export(output_path)
+    del dst_layer
+    gc.collect()
     return output_path, safe_id
+
+
+def _copy_spec_selective(src_layer, dst_layer, src_spec, dst_parent_spec, excluded_set):
+    """src_spec 하위를 excluded_set 경로를 제외하고 재귀 복사."""
+    for child in list(src_spec.nameChildren):
+        child_path = child.path
+        if child_path in excluded_set:
+            continue
+        if any(child_path.HasPrefix(ex) for ex in excluded_set):
+            continue
+        if dst_parent_spec is None:
+            dst_spec = Sdf.PrimSpec(dst_layer, child.name, child.specifier)
+        else:
+            dst_spec = Sdf.PrimSpec(dst_parent_spec, child.name, child.specifier)
+        dst_spec.typeName = child.typeName
+        for key in child.ListInfoKeys():
+            if key in ("specifier", "typeName"):
+                continue
+            try:
+                dst_spec.SetInfo(key, child.GetInfo(key))
+            except Exception:
+                pass
+        for prop_spec in child.properties.values():
+            try:
+                Sdf.CopySpec(src_layer, prop_spec.path, dst_layer, prop_spec.path)
+            except Exception:
+                pass
+        _copy_spec_selective(src_layer, dst_layer, child, dst_spec, excluded_set)
 
 
 def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[str, int]:
@@ -256,36 +276,12 @@ def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[
         output_dir, f"{cfg['output_prefix_infra']}{filename}{cfg['output_ext']}")
     dst_layer   = Sdf.Layer.CreateAnonymous()
     _copy_stage_metadata(src_layer, dst_layer)
-    for root_spec in src_layer.rootPrims:
-        try:
-            Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
-        except Exception:
-            pass
-    removed = 0
-    for path in excluded_paths:
-        if dst_layer.GetPrimAtPath(path):
-            parent_spec = dst_layer.GetPrimAtPath(path.GetParentPath())
-            if parent_spec:
-                try:
-                    del parent_spec.nameChildren[path.name]
-                    removed += 1
-                except Exception:
-                    pass
-    changed = True
-    while changed:
-        changed = False
-        for spec in _all_prim_specs(dst_layer):
-            if spec.typeName == "Xform" and len(list(spec.nameChildren)) == 0:
-                parent = dst_layer.GetPrimAtPath(spec.path.GetParentPath())
-                if parent and spec.path != Sdf.Path("/"):
-                    try:
-                        del parent.nameChildren[spec.path.name]
-                        changed = True
-                        break
-                    except Exception:
-                        pass
+    excluded_set = set(excluded_paths)
+    _copy_spec_selective(src_layer, dst_layer, src_layer.pseudoRoot, None, excluded_set)
     dst_layer.Export(output_path)
-    return output_path, removed
+    del dst_layer
+    gc.collect()
+    return output_path, len(excluded_paths)
 
 
 # ── Main process ───────────────────────────────────────────────────────────────
@@ -342,6 +338,8 @@ def process_stage(
         log(f"  [CONFIG] height range: [{cfg['floor_z_min']:.1f}, {cfg['floor_z_max']:.1f}]")
 
     eqp_dict, util_dict = collect_components(stage, bbox_cache, cfg, log=log)
+    del bbox_cache
+    gc.collect()
 
     # EQP 저장
     sanitize_log: list[tuple[str, str, str]] = []  # (category, original, safe)
