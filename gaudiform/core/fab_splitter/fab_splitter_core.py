@@ -384,4 +384,8 @@ def process_stage(
         log(f"  [INFRA] removed {removed} prims → {infra_path}")
         infra_count = 1
 
-    return len(eqp_dict), len(util_dict), infra_count
+    eqp_n, util_n = len(eqp_dict), len(util_dict)
+    del eqp_dict, util_dict, all_paths
+    gc.collect()
+
+    return eqp_n, util_n, infra_count
