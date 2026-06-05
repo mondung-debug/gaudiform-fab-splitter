@@ -242,46 +242,31 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
     return output_path, safe_id
 
 
-def _copy_spec_selective(src_layer, dst_layer, src_spec, dst_parent_spec, excluded_set):
-    """src_spec 하위를 excluded_set 경로를 제외하고 재귀 복사."""
-    for child in list(src_spec.nameChildren):
-        child_path = child.path
-        if child_path in excluded_set:
-            continue
-        if any(child_path.HasPrefix(ex) for ex in excluded_set):
-            continue
-        if dst_parent_spec is None:
-            dst_spec = Sdf.PrimSpec(dst_layer, child.name, child.specifier)
-        else:
-            dst_spec = Sdf.PrimSpec(dst_parent_spec, child.name, child.specifier)
-        dst_spec.typeName = child.typeName
-        for key in child.ListInfoKeys():
-            if key in ("specifier", "typeName"):
-                continue
-            try:
-                dst_spec.SetInfo(key, child.GetInfo(key))
-            except Exception:
-                pass
-        for prop_spec in child.properties.values():
-            try:
-                Sdf.CopySpec(src_layer, prop_spec.path, dst_layer, prop_spec.path)
-            except Exception:
-                pass
-        _copy_spec_selective(src_layer, dst_layer, child, dst_spec, excluded_set)
-
-
 def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[str, int]:
     src_layer   = src_stage.GetRootLayer()
     output_path = os.path.join(
         output_dir, f"{cfg['output_prefix_infra']}{filename}{cfg['output_ext']}")
     dst_layer   = Sdf.Layer.CreateAnonymous()
     _copy_stage_metadata(src_layer, dst_layer)
-    excluded_set = set(excluded_paths)
-    _copy_spec_selective(src_layer, dst_layer, src_layer.pseudoRoot, None, excluded_set)
+    for root_spec in src_layer.rootPrims:
+        try:
+            Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
+        except Exception:
+            pass
+    removed = 0
+    for path in excluded_paths:
+        if dst_layer.GetPrimAtPath(path):
+            parent_spec = dst_layer.GetPrimAtPath(path.GetParentPath())
+            if parent_spec:
+                try:
+                    del parent_spec.nameChildren[path.name]
+                    removed += 1
+                except Exception:
+                    pass
     dst_layer.Export(output_path)
     del dst_layer
     gc.collect()
-    return output_path, len(excluded_paths)
+    return output_path, removed
 
 
 # ── Main process ───────────────────────────────────────────────────────────────
