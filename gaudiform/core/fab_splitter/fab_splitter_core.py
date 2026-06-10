@@ -147,9 +147,19 @@ def collect_components(
                     stats["sk_temp"] += 1
                     log(f"  [SK_TEMP] {prim.GetPath().name}: SK_EQ_ID 없음 → {attr.rsplit(':', 1)[-1]}='{sk_eq_id}'")
                     break
+
+        # 카테고리는 ID 유무와 무관하게 항상 조회
+        cat        = _get_attr(prim, ATTR_CATEGORY)
+        level_prim = _level_ancestor(prim)
+        level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
+
         if not sk_eq_id:
-            if use_filename_fb and src_basename:
-                # 파일명을 ID로 사용해 UTIL로 추출
+            # ID 없음: util_categories에 속하면 파일명 그룹으로 UTIL 추출
+            if cat in util_cat_set:
+                fallback_id = src_basename or "_noID"
+                util_dict.setdefault(fallback_id, []).append(prim.GetPath())
+                stats["util_cat"] += 1
+            elif use_filename_fb and src_basename:
                 util_dict.setdefault(src_basename, []).append(prim.GetPath())
                 stats["filename_fb"] += 1
             else:
@@ -164,10 +174,6 @@ def collect_components(
                 if do_log_fix:
                     log(f"  [SK_EQ_ID FIX] {prim.GetPath().name}: '{sk_eq_id}' -> '{normalized}'")
                 sk_eq_id = normalized
-
-        cat        = _get_attr(prim, ATTR_CATEGORY)
-        level_prim = _level_ancestor(prim)
-        level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
 
         if cat == target_cat:
             if _is_bbox_in_range(prim, bbox_cache, z_min, z_max):
