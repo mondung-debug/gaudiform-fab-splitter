@@ -221,26 +221,68 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
 
 
 
-def _copy_prototype_scopes(src_stage, src_layer, dst_layer, cfg) -> None:
-    """defaultPrim 하위의 prototype 스코프를 dst_layer에 복사.
+def _collect_sdf_internal_refs(src_layer, comp_path: Sdf.Path) -> set:
+    """컴포넌트 SDF spec tree에서 같은 레이어 내부를 참조하는 외부 prim 경로 수집.
 
-    instancing 방식(PointInstancer / native instance / USD reference)에 무관하게
-    prototype_scope_names에 지정한 이름의 prim을 통째로 복사한다.
+    USD reference / payload 아크 중 assetPath가 없고(같은 파일)
+    컴포넌트 경로 밖을 가리키는 primPath를 반환한다.
+    """
+    targets: set = set()
+
+    def _walk(spec):
+        for lst in (spec.referenceList, spec.payloadList):
+            for item in lst.GetAddedOrExplicitItems():
+                if not item.assetPath and item.primPath and not item.primPath.isEmpty:
+                    target = item.primPath
+                    if not target.HasPrefix(comp_path):
+                        targets.add(target)
+        for child in spec.nameChildren.values():
+            _walk(child)
+
+    root_spec = src_layer.GetPrimAtPath(comp_path)
+    if root_spec:
+        _walk(root_spec)
+    return targets
+
+
+def _copy_external_prims(src_stage, src_layer, dst_layer, paths) -> None:
+    """paths에 있는 prim을 dst_layer에 복사 (ancestors 포함). 이미 있으면 스킵."""
+    for path in paths:
+        if dst_layer.GetPrimAtPath(path):
+            continue
+        spec = src_layer.GetPrimAtPath(path)
+        if not spec:
+            continue
+        _ensure_ancestors(src_stage, dst_layer, path)
+        try:
+            Sdf.CopySpec(src_layer, path, dst_layer, path)
+        except Exception:
+            pass
+
+
+def _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg) -> None:
+    """prototype_scope_names 목록의 prim을 defaultPrim 하위에서 찾아 복사.
+
+    SDF 레이어를 직접 조회하므로 stage 컴포지션 영향을 받지 않는다.
     """
     scope_names = cfg.get("prototype_scope_names", ["Prototypes"])
-    if not scope_names:
+    if not scope_names or not src_layer.defaultPrim:
         return
-    default_prim = src_stage.GetDefaultPrim()
-    if not default_prim:
-        return
+    default_path = Sdf.Path("/" + src_layer.defaultPrim)
     for name in scope_names:
-        child = default_prim.GetChild(name)
-        if not child or not child.IsValid():
+        child_path = default_path.AppendChild(name)
+        if not src_layer.GetPrimAtPath(child_path):
             continue
-        child_path = child.GetPath()
         if dst_layer.GetPrimAtPath(child_path):
             continue
-        _ensure_ancestors(src_stage, dst_layer, child_path)
+        # defaultPrim 컨테이너는 _ensure_ancestors 대신 직접 확인
+        if not dst_layer.GetPrimAtPath(default_path):
+            dp_spec = src_layer.GetPrimAtPath(default_path)
+            if dp_spec:
+                Sdf.PrimSpec(dst_layer, default_path.name, dp_spec.specifier)
+        parent_spec = dst_layer.GetPrimAtPath(default_path)
+        if not parent_spec:
+            continue
         try:
             Sdf.CopySpec(src_layer, child_path, dst_layer, child_path)
         except Exception:
@@ -265,8 +307,12 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
                 Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
             except Exception:
                 pass
-    # defaultPrim 하위 prototype 스코프 복사 (bInstancing 지원)
-    _copy_prototype_scopes(src_stage, src_layer, dst_layer, cfg)
+    # bInstancing 지원: SDF 참조 기반 + 이름 기반으로 prototype 복사
+    ref_targets: set = set()
+    for comp_path in component_paths:
+        ref_targets |= _collect_sdf_internal_refs(src_layer, comp_path)
+    _copy_external_prims(src_stage, src_layer, dst_layer, ref_targets)
+    _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg)
     dst_layer.Export(output_path)
     dst_layer.Clear()
     del dst_layer
