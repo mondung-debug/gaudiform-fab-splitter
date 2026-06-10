@@ -41,7 +41,6 @@ DEFAULT_CFG = {
     "log_sk_eq_id_fix":       True,        # 수정된 SK_EQ_ID 로그 출력
     "prototype_scope_names":  ["Prototypes"],  # defaultPrim 하위 prototype 스코프 이름 목록
     "sk_temp_attr_names":     ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"],  # SK_EQ_ID 없을 때 폴백
-    "use_filename_as_fallback_id": True,   # SK_TEMP*도 없으면 파일명을 ID로 UTIL 추출
 }
 
 
@@ -119,16 +118,15 @@ def collect_components(
     do_normalize  = cfg.get("normalize_sk_eq_id", True)
     do_log_fix    = cfg.get("log_sk_eq_id_fix", True)
 
-    sk_temp_attrs   = [f"{_SK_TEMP_NAMESPACE}:{n}"
-                       for n in cfg.get("sk_temp_attr_names", _SK_TEMP_NAMES)]
-    use_filename_fb = cfg.get("use_filename_as_fallback_id", True)
-    src_basename    = cfg.get("_src_basename", "")
+    sk_temp_attrs = [f"{_SK_TEMP_NAMESPACE}:{n}"
+                     for n in cfg.get("sk_temp_attr_names", _SK_TEMP_NAMES)]
+    src_basename  = cfg.get("_src_basename", "")
 
     eqp_dict: dict  = {}
     util_dict: dict = {}
     stats = {"total": 0, "eqp": 0, "util_cat": 0,
              "util_height": 0, "infra_no_id": 0, "infra_other": 0,
-             "id_fixed": 0, "sk_temp": 0, "filename_fb": 0}
+             "id_fixed": 0, "sk_temp": 0}
 
     for prim in stage.TraverseAll():
         if prim.IsInstanceProxy():
@@ -154,14 +152,11 @@ def collect_components(
         level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
 
         if not sk_eq_id:
-            # ID 없음: util_categories에 속하면 파일명 그룹으로 UTIL 추출
+            # ID 없음: util_categories에 속하면 파일명 그룹으로 UTIL, 그 외는 INFRA
             if cat in util_cat_set:
                 fallback_id = src_basename or "_noID"
                 util_dict.setdefault(fallback_id, []).append(prim.GetPath())
                 stats["util_cat"] += 1
-            elif use_filename_fb and src_basename:
-                util_dict.setdefault(src_basename, []).append(prim.GetPath())
-                stats["filename_fb"] += 1
             else:
                 stats["infra_no_id"] += 1
             continue
@@ -195,8 +190,7 @@ def collect_components(
         f"EQP={stats['eqp']} ({len(eqp_dict)} IDs), "
         f"UTIL_cat={stats['util_cat']}, UTIL_height={stats['util_height']}, "
         f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}, "
-        f"ID_fixed={stats['id_fixed']}, SK_TEMP={stats['sk_temp']}, "
-        f"FilenameFB={stats['filename_fb']}")
+        f"ID_fixed={stats['id_fixed']}, SK_TEMP={stats['sk_temp']}")
     return eqp_dict, util_dict
 
 
