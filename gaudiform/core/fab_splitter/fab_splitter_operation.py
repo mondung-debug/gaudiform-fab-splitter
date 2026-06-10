@@ -87,8 +87,6 @@ class FabSplitterOperation(PostProcessOperation):
                 f"완료: EQP {eqp_count}개 + UTIL {util_count}개 + INFRA {infra_count}개 파일 생성"
             )
         finally:
-            if stage is not None:
-                Usd.Stage.Close(stage)
             for layer in used_layers:
                 layer.Clear()
             del stage, used_layers
