@@ -19,6 +19,10 @@ ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 
+# SK_EQ_ID 폴백 속성 (SK_TEMP / SK_TEMP1 / SK_TEMP2)
+_SK_TEMP_NAMESPACE = "omni:hoops:metadata:tn__IdentityData_qC"
+_SK_TEMP_NAMES     = ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"]
+
 # ── Default config ─────────────────────────────────────────────────────────────
 
 DEFAULT_CFG = {
@@ -36,6 +40,8 @@ DEFAULT_CFG = {
     "normalize_sk_eq_id":     True,        # _숫자 suffix 자동 제거 (abc123_1 → abc123)
     "log_sk_eq_id_fix":       True,        # 수정된 SK_EQ_ID 로그 출력
     "prototype_scope_names":  ["Prototypes"],  # defaultPrim 하위 prototype 스코프 이름 목록
+    "sk_temp_attr_names":     ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"],  # SK_EQ_ID 없을 때 폴백
+    "use_filename_as_fallback_id": True,   # SK_TEMP*도 없으면 파일명을 ID로 UTIL 추출
 }
 
 
@@ -113,10 +119,16 @@ def collect_components(
     do_normalize  = cfg.get("normalize_sk_eq_id", True)
     do_log_fix    = cfg.get("log_sk_eq_id_fix", True)
 
+    sk_temp_attrs   = [f"{_SK_TEMP_NAMESPACE}:{n}"
+                       for n in cfg.get("sk_temp_attr_names", _SK_TEMP_NAMES)]
+    use_filename_fb = cfg.get("use_filename_as_fallback_id", True)
+    src_basename    = cfg.get("_src_basename", "")
+
     eqp_dict: dict  = {}
     util_dict: dict = {}
     stats = {"total": 0, "eqp": 0, "util_cat": 0,
-             "util_height": 0, "infra_no_id": 0, "infra_other": 0, "id_fixed": 0}
+             "util_height": 0, "infra_no_id": 0, "infra_other": 0,
+             "id_fixed": 0, "sk_temp": 0, "filename_fb": 0}
 
     for prim in stage.TraverseAll():
         if prim.IsInstanceProxy():
@@ -127,7 +139,21 @@ def collect_components(
 
         sk_eq_id = _get_attr(prim, ATTR_SK_EQ_ID)
         if not sk_eq_id:
-            stats["infra_no_id"] += 1
+            # SK_TEMP / SK_TEMP1 / SK_TEMP2 폴백
+            for attr in sk_temp_attrs:
+                val = _get_attr(prim, attr)
+                if val:
+                    sk_eq_id = str(val)
+                    stats["sk_temp"] += 1
+                    log(f"  [SK_TEMP] {prim.GetPath().name}: SK_EQ_ID 없음 → {attr.rsplit(':', 1)[-1]}='{sk_eq_id}'")
+                    break
+        if not sk_eq_id:
+            if use_filename_fb and src_basename:
+                # 파일명을 ID로 사용해 UTIL로 추출
+                util_dict.setdefault(src_basename, []).append(prim.GetPath())
+                stats["filename_fb"] += 1
+            else:
+                stats["infra_no_id"] += 1
             continue
 
         sk_eq_id = str(sk_eq_id)
@@ -163,7 +189,8 @@ def collect_components(
         f"EQP={stats['eqp']} ({len(eqp_dict)} IDs), "
         f"UTIL_cat={stats['util_cat']}, UTIL_height={stats['util_height']}, "
         f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}, "
-        f"ID_fixed={stats['id_fixed']}")
+        f"ID_fixed={stats['id_fixed']}, SK_TEMP={stats['sk_temp']}, "
+        f"FilenameFB={stats['filename_fb']}")
     return eqp_dict, util_dict
 
 
@@ -377,6 +404,8 @@ def process_stage(
     cfg = merged
 
     src_basename = os.path.splitext(os.path.basename(usd_file_path))[0]
+    cfg = dict(cfg)
+    cfg["_src_basename"] = src_basename  # collect_components에서 파일명 폴백용
     bbox_cache   = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
 
     # 층 Z 범위 결정
