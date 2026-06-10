@@ -220,18 +220,25 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
 
 
 
-def _collect_instance_prototypes(src_stage, component_paths: list) -> set:
-    """native USD instance prim이 참조하는 prototype SdfPath 수집."""
+def _collect_prototype_paths(src_stage, component_paths: list) -> set:
+    """컴포넌트 외부에 있는 prototype SdfPath 수집 (native instance + PointInstancer)."""
     proto_paths = set()
     for comp_path in component_paths:
         prim = src_stage.GetPrimAtPath(comp_path)
         if not prim or not prim.IsValid():
             continue
         for p in Usd.PrimRange(prim):
+            # native USD instance → __Prototype_N
             if p.IsInstance():
                 proto = p.GetPrototype()
                 if proto and proto.IsValid():
                     proto_paths.add(proto.GetPath())
+            # PointInstancer → prototypesRel 대상 중 컴포넌트 외부 경로
+            if p.IsA(UsdGeom.PointInstancer):
+                instancer = UsdGeom.PointInstancer(p)
+                for target in instancer.GetPrototypesRel().GetTargets():
+                    if not target.HasPrefix(comp_path):
+                        proto_paths.add(target)
     return proto_paths
 
 
@@ -253,12 +260,13 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
                 Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
             except Exception:
                 pass
-    # native USD instance prototype 복사 (bInstancing 지원)
-    proto_paths = _collect_instance_prototypes(src_stage, component_paths)
+    # native USD instance / PointInstancer prototype 복사 (bInstancing 지원)
+    proto_paths = _collect_prototype_paths(src_stage, component_paths)
     src_layer = src_stage.GetRootLayer()
     for proto_path in proto_paths:
         if not dst_layer.GetPrimAtPath(proto_path):
             try:
+                _ensure_ancestors(src_stage, dst_layer, proto_path)
                 Sdf.CopySpec(src_layer, proto_path, dst_layer, proto_path)
             except Exception:
                 pass
