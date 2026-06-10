@@ -32,6 +32,10 @@ output_directory 하위에 저장합니다.
 
 from __future__ import annotations
 
+import gc
+
+from pxr import Sdf, Usd
+
 from gaudiform.core.post_processing import PostProcessOperation, PostProcessContext
 from gaudiform.core.fab_splitter.fab_splitter_core import process_stage
 
@@ -42,13 +46,9 @@ class FabSplitterOperation(PostProcessOperation):
     """USD stage를 EQP/UTIL/INFRA로 분리하는 오퍼레이션."""
 
     phase = "per_file"
+    handles_own_save = True  # 소스 stage를 수정하지 않으므로 저장 불필요
 
     def execute(self, context: PostProcessContext) -> None:
-        stage = context.stage
-        if stage is None:
-            context.on_warn(_TAG, "stage가 없습니다. 스킵합니다.")
-            return
-
         usd_file_path    = context.usd_file_path
         output_directory = context.output_directory or ""
         if not output_directory:
@@ -65,15 +65,31 @@ class FabSplitterOperation(PostProcessOperation):
 
         context.on_info(_TAG, f"FAB 분리 시작: {usd_file_path}")
 
-        eqp_count, util_count, infra_count = process_stage(
-            stage=stage,
-            usd_file_path=usd_file_path,
-            output_directory=output_directory,
-            cfg=cfg,
-            log=_log,
-        )
+        # 스케줄러의 stage와 독립된 익명 레이어로 열어서 처리 후 명시적 해제.
+        # 파일 수가 많을 때 USD 레이어 레지스트리에 stage가 누적되는 문제를 방지한다.
+        stage = None
+        used_layers = []
+        try:
+            anon_layer = Sdf.Layer.OpenAsAnonymous(usd_file_path)
+            stage = Usd.Stage.Open(anon_layer)
+            used_layers = list(stage.GetUsedLayers())
 
-        context.on_info(
-            _TAG,
-            f"완료: EQP {eqp_count}개 + UTIL {util_count}개 + INFRA {infra_count}개 파일 생성"
-        )
+            eqp_count, util_count, infra_count = process_stage(
+                stage=stage,
+                usd_file_path=usd_file_path,
+                output_directory=output_directory,
+                cfg=cfg,
+                log=_log,
+            )
+
+            context.on_info(
+                _TAG,
+                f"완료: EQP {eqp_count}개 + UTIL {util_count}개 + INFRA {infra_count}개 파일 생성"
+            )
+        finally:
+            if stage is not None:
+                Usd.Stage.Close(stage)
+            for layer in used_layers:
+                layer.Clear()
+            del stage, used_layers
+            gc.collect()

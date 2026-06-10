@@ -263,6 +263,7 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
             except Exception:
                 pass
     dst_layer.Export(output_path)
+    dst_layer.Clear()
     del dst_layer
     gc.collect()
     return output_path, safe_id
@@ -290,6 +291,7 @@ def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[
                 except Exception:
                     pass
     dst_layer.Export(output_path)
+    dst_layer.Clear()
     del dst_layer
     gc.collect()
     return output_path, removed
