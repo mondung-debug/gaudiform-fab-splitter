@@ -118,6 +118,8 @@ def collect_components(
              "util_height": 0, "infra_no_id": 0, "infra_other": 0, "id_fixed": 0}
 
     for prim in stage.TraverseAll():
+        if prim.IsInstanceProxy():
+            continue
         if Usd.ModelAPI(prim).GetKind() != "component":
             continue
         stats["total"] += 1
@@ -218,6 +220,21 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
 
 
 
+def _collect_instance_prototypes(src_stage, component_paths: list) -> set:
+    """native USD instance prim이 참조하는 prototype SdfPath 수집."""
+    proto_paths = set()
+    for comp_path in component_paths:
+        prim = src_stage.GetPrimAtPath(comp_path)
+        if not prim or not prim.IsValid():
+            continue
+        for p in Usd.PrimRange(prim):
+            if p.IsInstance():
+                proto = p.GetPrototype()
+                if proto and proto.IsValid():
+                    proto_paths.add(proto.GetPath())
+    return proto_paths
+
+
 def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> tuple[str, str]:
     """Returns (output_path, safe_id). safe_id == sk_eq_id if no sanitization needed."""
     src_layer   = src_stage.GetRootLayer()
@@ -234,6 +251,15 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
         if not dst_layer.GetPrimAtPath(root_spec.path):
             try:
                 Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
+            except Exception:
+                pass
+    # native USD instance prototype 복사 (bInstancing 지원)
+    proto_paths = _collect_instance_prototypes(src_stage, component_paths)
+    src_layer = src_stage.GetRootLayer()
+    for proto_path in proto_paths:
+        if not dst_layer.GetPrimAtPath(proto_path):
+            try:
+                Sdf.CopySpec(src_layer, proto_path, dst_layer, proto_path)
             except Exception:
                 pass
     dst_layer.Export(output_path)
