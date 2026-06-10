@@ -33,8 +33,9 @@ DEFAULT_CFG = {
     "output_prefix_infra":    "INFRA_",
     "output_ext":             ".usd",
     "split_output_folders":   True,
-    "normalize_sk_eq_id":     True,   # _숫자 suffix 자동 제거 (abc123_1 → abc123)
-    "log_sk_eq_id_fix":       True,   # 수정된 SK_EQ_ID 로그 출력
+    "normalize_sk_eq_id":     True,        # _숫자 suffix 자동 제거 (abc123_1 → abc123)
+    "log_sk_eq_id_fix":       True,        # 수정된 SK_EQ_ID 로그 출력
+    "prototype_scope_names":  ["Prototypes"],  # defaultPrim 하위 prototype 스코프 이름 목록
 }
 
 
@@ -220,26 +221,30 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
 
 
 
-def _collect_prototype_paths(src_stage, component_paths: list) -> set:
-    """컴포넌트 외부에 있는 prototype SdfPath 수집 (native instance + PointInstancer)."""
-    proto_paths = set()
-    for comp_path in component_paths:
-        prim = src_stage.GetPrimAtPath(comp_path)
-        if not prim or not prim.IsValid():
+def _copy_prototype_scopes(src_stage, src_layer, dst_layer, cfg) -> None:
+    """defaultPrim 하위의 prototype 스코프를 dst_layer에 복사.
+
+    instancing 방식(PointInstancer / native instance / USD reference)에 무관하게
+    prototype_scope_names에 지정한 이름의 prim을 통째로 복사한다.
+    """
+    scope_names = cfg.get("prototype_scope_names", ["Prototypes"])
+    if not scope_names:
+        return
+    default_prim = src_stage.GetDefaultPrim()
+    if not default_prim:
+        return
+    for name in scope_names:
+        child = default_prim.GetChild(name)
+        if not child or not child.IsValid():
             continue
-        for p in Usd.PrimRange(prim):
-            # native USD instance → __Prototype_N
-            if p.IsInstance():
-                proto = p.GetPrototype()
-                if proto and proto.IsValid():
-                    proto_paths.add(proto.GetPath())
-            # PointInstancer → prototypesRel 대상 중 컴포넌트 외부 경로
-            if p.IsA(UsdGeom.PointInstancer):
-                instancer = UsdGeom.PointInstancer(p)
-                for target in instancer.GetPrototypesRel().GetTargets():
-                    if not target.HasPrefix(comp_path):
-                        proto_paths.add(target)
-    return proto_paths
+        child_path = child.GetPath()
+        if dst_layer.GetPrimAtPath(child_path):
+            continue
+        _ensure_ancestors(src_stage, dst_layer, child_path)
+        try:
+            Sdf.CopySpec(src_layer, child_path, dst_layer, child_path)
+        except Exception:
+            pass
 
 
 def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> tuple[str, str]:
@@ -260,16 +265,8 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
                 Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
             except Exception:
                 pass
-    # native USD instance / PointInstancer prototype 복사 (bInstancing 지원)
-    proto_paths = _collect_prototype_paths(src_stage, component_paths)
-    src_layer = src_stage.GetRootLayer()
-    for proto_path in proto_paths:
-        if not dst_layer.GetPrimAtPath(proto_path):
-            try:
-                _ensure_ancestors(src_stage, dst_layer, proto_path)
-                Sdf.CopySpec(src_layer, proto_path, dst_layer, proto_path)
-            except Exception:
-                pass
+    # defaultPrim 하위 prototype 스코프 복사 (bInstancing 지원)
+    _copy_prototype_scopes(src_stage, src_layer, dst_layer, cfg)
     dst_layer.Export(output_path)
     dst_layer.Clear()
     del dst_layer
