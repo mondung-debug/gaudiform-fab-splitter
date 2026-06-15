@@ -16,10 +16,11 @@ from pxr import Sdf, Usd, UsdGeom
 
 ATTR_CATEGORY   = "omni:hoops:metadata:Other:Category"
 ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
+ATTR_EQP_CODE   = "omni:hoops:metadata:tn___CODE_gXt8ajG:장비_CODE"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 
-# SK_EQ_ID 폴백 속성 (SK_TEMP / SK_TEMP1 / SK_TEMP2)
+# SK_EQ_ID 폴백 순서: 장비_CODE → SK_TEMP / SK_TEMP1 / SK_TEMP2
 _SK_TEMP_NAMESPACE = "omni:hoops:metadata:tn__IdentityData_qC"
 _SK_TEMP_NAMES     = ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"]
 
@@ -40,7 +41,7 @@ DEFAULT_CFG = {
     "normalize_sk_eq_id":     True,        # _숫자 suffix 자동 제거 (abc123_1 → abc123)
     "log_sk_eq_id_fix":       True,        # 수정된 SK_EQ_ID 로그 출력
     "prototype_scope_names":  ["Prototypes"],  # defaultPrim 하위 prototype 스코프 이름 목록
-    "sk_temp_attr_names":     ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"],  # SK_EQ_ID 없을 때 폴백
+    "sk_temp_attr_names":     ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"],  # SK_EQ_ID/장비_CODE 없을 때 폴백
 }
 
 
@@ -118,6 +119,7 @@ def collect_components(
     do_normalize  = cfg.get("normalize_sk_eq_id", True)
     do_log_fix    = cfg.get("log_sk_eq_id_fix", True)
 
+    eqp_code_attr = ATTR_EQP_CODE
     sk_temp_attrs = [f"{_SK_TEMP_NAMESPACE}:{n}"
                      for n in cfg.get("sk_temp_attr_names", _SK_TEMP_NAMES)]
     src_basename  = cfg.get("_src_basename", "")
@@ -126,7 +128,7 @@ def collect_components(
     util_dict: dict = {}
     stats = {"total": 0, "eqp": 0, "util_cat": 0,
              "util_height": 0, "infra_no_id": 0, "infra_other": 0,
-             "id_fixed": 0, "sk_temp": 0}
+             "id_fixed": 0, "eqp_code": 0, "sk_temp": 0}
 
     for prim in stage.TraverseAll():
         if prim.IsInstanceProxy():
@@ -137,7 +139,14 @@ def collect_components(
 
         sk_eq_id = _get_attr(prim, ATTR_SK_EQ_ID)
         if not sk_eq_id:
-            # SK_TEMP / SK_TEMP1 / SK_TEMP2 폴백
+            # 1순위 폴백: 장비_CODE
+            val = _get_attr(prim, eqp_code_attr)
+            if val:
+                sk_eq_id = str(val)
+                stats["eqp_code"] += 1
+                log(f"  [EQP_CODE] {prim.GetPath().name}: SK_EQ_ID 없음 → 장비_CODE='{sk_eq_id}'")
+        if not sk_eq_id:
+            # 2순위 폴백: SK_TEMP / SK_TEMP1 / SK_TEMP2
             for attr in sk_temp_attrs:
                 val = _get_attr(prim, attr)
                 if val:
@@ -190,7 +199,7 @@ def collect_components(
         f"EQP={stats['eqp']} ({len(eqp_dict)} IDs), "
         f"UTIL_cat={stats['util_cat']}, UTIL_height={stats['util_height']}, "
         f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}, "
-        f"ID_fixed={stats['id_fixed']}, SK_TEMP={stats['sk_temp']}")
+        f"ID_fixed={stats['id_fixed']}, EQP_CODE={stats['eqp_code']}, SK_TEMP={stats['sk_temp']}")
     return eqp_dict, util_dict
 
 
