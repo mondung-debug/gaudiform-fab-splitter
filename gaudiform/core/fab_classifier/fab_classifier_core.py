@@ -39,6 +39,8 @@ def get_floor_names(stage) -> set[str]:
     for prim in stage.TraverseAll():
         if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
+        if not prim.GetChildren():
+            continue
         name = _get_attr(prim, ATTR_LEVEL_NAME)
         if name:
             names.add(str(name).strip())
