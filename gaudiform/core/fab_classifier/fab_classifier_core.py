@@ -20,11 +20,13 @@ from __future__ import annotations
 import os
 import shutil
 
-from pxr import Usd
+from pxr import Usd, UsdGeom
 
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
 ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
+
+_TC = Usd.TimeCode.Default()
 
 
 def _get_attr(prim, attr_name):
@@ -34,23 +36,66 @@ def _get_attr(prim, attr_name):
     return None
 
 
-def _has_equipment(prim) -> bool:
-    """IFCBUILDINGSTOREY 하위에 SK_EQ_ID가 있는 프림이 있으면 True."""
-    for child in Usd.PrimRange(prim):
-        if child == prim:
+def _floor_world_z(prim, xf_cache) -> float:
+    return xf_cache.GetLocalToWorldTransform(prim).ExtractTranslation()[2]
+
+
+def _bbox_z_center(prim, bbox_cache):
+    b = bbox_cache.ComputeWorldBound(prim)
+    r = b.GetRange()
+    if r.IsEmpty():
+        return None
+    return (r.GetMin()[2] + r.GetMax()[2]) / 2.0
+
+
+def _build_floor_z_ranges(stage, xf_cache) -> dict:
+    """
+    IFCBUILDINGSTOREY를 Z순으로 정렬해 각 층의 Z 범위를 계산.
+    Returns: {prim_path_str: (z_min, z_max)}
+    """
+    floors = []
+    for prim in stage.TraverseAll():
+        if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
-        if _get_attr(child, ATTR_SK_EQ_ID):
+        floors.append((_floor_world_z(prim, xf_cache), prim))
+    floors.sort(key=lambda x: x[0])
+    ranges = {}
+    for i, (z, prim) in enumerate(floors):
+        z_max = floors[i + 1][0] if i + 1 < len(floors) else float("inf")
+        ranges[str(prim.GetPath())] = (z, z_max)
+    return ranges
+
+
+def _has_equipment_in_z(floor_prim, z_range, bbox_cache) -> bool:
+    """IFCBUILDINGSTOREY 하위에서 Z 범위 안의 SK_EQ_ID 장비가 있으면 True."""
+    z_min, z_max = z_range
+    for child in Usd.PrimRange(floor_prim):
+        if child == floor_prim:
+            continue
+        if not _get_attr(child, ATTR_SK_EQ_ID):
+            continue
+        z = _bbox_z_center(child, bbox_cache)
+        if z is None:
+            continue
+        if z_min <= z < z_max:
             return True
     return False
 
 
 def get_floor_names(stage) -> set[str]:
-    """USD stage에서 SK_EQ_ID를 가진 장비가 있는 층 이름만 수집."""
+    """USD stage에서 실제 Z 위치 기반으로 유효 장비가 있는 층 이름만 수집."""
+    xf_cache   = UsdGeom.XformCache(_TC)
+    bbox_cache = UsdGeom.BBoxCache(_TC, [UsdGeom.Tokens.default_], useExtentsHint=True)
+    floor_z_ranges = _build_floor_z_ranges(stage, xf_cache)
+
     names: set[str] = set()
     for prim in stage.TraverseAll():
         if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
-        if not _has_equipment(prim):
+        z_range = floor_z_ranges.get(str(prim.GetPath()))
+        if z_range is None:
+            continue
+        if not _has_equipment_in_z(prim, z_range, bbox_cache):
             continue
         name = _get_attr(prim, ATTR_LEVEL_NAME)
         if name:
