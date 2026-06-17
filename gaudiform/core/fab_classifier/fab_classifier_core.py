@@ -24,6 +24,7 @@ from pxr import Usd
 
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
+ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
 
 
 def _get_attr(prim, attr_name):
@@ -33,13 +34,23 @@ def _get_attr(prim, attr_name):
     return None
 
 
+def _has_equipment(prim) -> bool:
+    """IFCBUILDINGSTOREY 하위에 SK_EQ_ID가 있는 프림이 있으면 True."""
+    for child in Usd.PrimRange(prim):
+        if child == prim:
+            continue
+        if _get_attr(child, ATTR_SK_EQ_ID):
+            return True
+    return False
+
+
 def get_floor_names(stage) -> set[str]:
-    """USD stage에서 IFCBUILDINGSTOREY 층 이름 수집."""
+    """USD stage에서 SK_EQ_ID를 가진 장비가 있는 층 이름만 수집."""
     names: set[str] = set()
     for prim in stage.TraverseAll():
         if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
-        if not prim.GetChildren():
+        if not _has_equipment(prim):
             continue
         name = _get_attr(prim, ATTR_LEVEL_NAME)
         if name:
