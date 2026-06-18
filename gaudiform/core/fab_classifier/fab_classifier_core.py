@@ -20,11 +20,14 @@ from __future__ import annotations
 import os
 import shutil
 
-from pxr import Usd
+from pxr import Usd, UsdGeom
 
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
 ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
+ATTR_ELEVATION  = "omni:hoops:metadata:Constraints:Elevation"
+
+_TC = Usd.TimeCode.Default()
 
 
 def _get_attr(prim, attr_name):
@@ -34,35 +37,68 @@ def _get_attr(prim, attr_name):
     return None
 
 
+def _eq_world_z(prim, xf_cache):
+    try:
+        return xf_cache.GetLocalToWorldTransform(prim).ExtractTranslation()[2]
+    except Exception:
+        return None
+
+
 def get_floor_names(stage) -> set[str]:
     """
-    IFCBUILDINGSTOREY 계층 기반 층 이름 수집.
-    동일 SK_EQ_ID가 여러 층에 중복 배치된 경우 첫 번째 층만 유효.
+    1차: Constraints:Elevation으로 층 Z 범위 계산, 장비 world Z 검증.
+    폴백: 층별 Elevation 동일 시 SK_EQ_ID 첫 등장 층 기준.
     """
-    seen_eq_ids: set[str] = set()
-    floor_eq_ids: dict[str, set] = {}
-
+    floors = []
     for prim in stage.TraverseAll():
         if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
-        floor_name = _get_attr(prim, ATTR_LEVEL_NAME)
-        if not floor_name:
+        name = _get_attr(prim, ATTR_LEVEL_NAME)
+        if not name:
             continue
-        floor_name = str(floor_name).strip()
+        elev = _get_attr(prim, ATTR_ELEVATION)
+        floors.append((float(elev) if elev is not None else 0.0,
+                       str(name).strip(), prim))
 
-        for child in Usd.PrimRange(prim):
-            if child == prim:
-                continue
-            eq_id = _get_attr(child, ATTR_SK_EQ_ID)
-            if not eq_id:
-                continue
-            eq_id = str(eq_id).strip()
-            if eq_id in seen_eq_ids:
-                continue
-            seen_eq_ids.add(eq_id)
-            floor_eq_ids.setdefault(floor_name, set()).add(eq_id)
+    if not floors:
+        return set()
 
-    return set(floor_eq_ids.keys())
+    floors.sort(key=lambda x: x[0])
+    elevations = [f[0] for f in floors]
+    all_same = (max(elevations) - min(elevations)) < 1.0
+
+    names: set[str] = set()
+
+    if not all_same:
+        xf_cache = UsdGeom.XformCache(_TC)
+        for i, (elev, floor_name, floor_prim) in enumerate(floors):
+            z_min = elev / 1000.0
+            z_max = floors[i + 1][0] / 1000.0 if i + 1 < len(floors) else float("inf")
+            for child in Usd.PrimRange(floor_prim):
+                if child == floor_prim:
+                    continue
+                if not _get_attr(child, ATTR_SK_EQ_ID):
+                    continue
+                eq_z = _eq_world_z(child, xf_cache)
+                if eq_z is not None and z_min <= eq_z < z_max:
+                    names.add(floor_name)
+                    break
+    else:
+        seen_eq_ids: set[str] = set()
+        for _, floor_name, floor_prim in floors:
+            for child in Usd.PrimRange(floor_prim):
+                if child == floor_prim:
+                    continue
+                eq_id = _get_attr(child, ATTR_SK_EQ_ID)
+                if not eq_id:
+                    continue
+                eq_id = str(eq_id).strip()
+                if eq_id in seen_eq_ids:
+                    continue
+                seen_eq_ids.add(eq_id)
+                names.add(floor_name)
+
+    return names
 
 
 def classify_usd(usd_path: str, fab_map: dict[str, list[str]], log=print) -> list[str]:
