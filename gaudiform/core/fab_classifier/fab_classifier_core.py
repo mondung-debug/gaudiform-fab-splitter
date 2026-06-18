@@ -22,10 +22,9 @@ import shutil
 
 from pxr import Usd
 
-ATTR_TYPE        = "omni:hoops:metadata:TYPE"
-ATTR_LEVEL_NAME  = "omni:hoops:metadata:tn__IdentityData_qC:Name"
-ATTR_SK_EQ_ID    = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
-ATTR_EQ_LEVEL    = "omni:hoops:metadata:Constraints:Level"
+ATTR_TYPE       = "omni:hoops:metadata:TYPE"
+ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
+ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
 
 
 def _get_attr(prim, attr_name):
@@ -35,44 +34,35 @@ def _get_attr(prim, attr_name):
     return None
 
 
-def _parse_level_name(raw: str) -> str:
-    """'9th FL (OdBmLevel)' → '9th FL'"""
-    return raw.split("(")[0].strip()
-
-
 def get_floor_names(stage) -> set[str]:
     """
-    SK_EQ_ID 장비의 Constraints:Level 속성으로 실제 소속 층 이름 수집.
-    Constraints:Level 없으면 IFCBUILDINGSTOREY 계층 구조로 폴백.
+    IFCBUILDINGSTOREY 계층 기반 층 이름 수집.
+    동일 SK_EQ_ID가 여러 층에 중복 배치된 경우 첫 번째 층만 유효.
     """
-    names: set[str] = set()
+    seen_eq_ids: set[str] = set()
+    floor_eq_ids: dict[str, set] = {}
 
     for prim in stage.TraverseAll():
-        if not _get_attr(prim, ATTR_SK_EQ_ID):
+        if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
             continue
-        raw_level = _get_attr(prim, ATTR_EQ_LEVEL)
-        if not raw_level:
+        floor_name = _get_attr(prim, ATTR_LEVEL_NAME)
+        if not floor_name:
             continue
-        floor_name = _parse_level_name(str(raw_level))
-        if floor_name:
-            names.add(floor_name)
+        floor_name = str(floor_name).strip()
 
-    if not names:
-        for prim in stage.TraverseAll():
-            if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
+        for child in Usd.PrimRange(prim):
+            if child == prim:
                 continue
-            has_eq = any(
-                _get_attr(child, ATTR_SK_EQ_ID)
-                for child in Usd.PrimRange(prim)
-                if child != prim
-            )
-            if not has_eq:
+            eq_id = _get_attr(child, ATTR_SK_EQ_ID)
+            if not eq_id:
                 continue
-            name = _get_attr(prim, ATTR_LEVEL_NAME)
-            if name:
-                names.add(str(name).strip())
+            eq_id = str(eq_id).strip()
+            if eq_id in seen_eq_ids:
+                continue
+            seen_eq_ids.add(eq_id)
+            floor_eq_ids.setdefault(floor_name, set()).add(eq_id)
 
-    return names
+    return set(floor_eq_ids.keys())
 
 
 def classify_usd(usd_path: str, fab_map: dict[str, list[str]], log=print) -> list[str]:
