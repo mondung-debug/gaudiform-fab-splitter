@@ -65,7 +65,7 @@ def get_floor_names(stage) -> set[str]:
 
     floors.sort(key=lambda x: x[0])
     elevations = [f[0] for f in floors]
-    all_same = (max(elevations) - min(elevations)) < 1.0
+    all_same = (max(elevations) - min(elevations)) < 1000.0  # 실제 층간 간격은 수천mm; 1m 미만 차이면 동일로 처리
 
     names: set[str] = set()
 
