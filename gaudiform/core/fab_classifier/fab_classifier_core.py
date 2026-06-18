@@ -46,9 +46,11 @@ def _eq_world_z(prim, xf_cache):
 
 def get_floor_names(stage) -> set[str]:
     """
-    1차: Constraints:Elevation으로 층 Z 범위 계산, 장비 world Z 검증.
-    폴백: 층별 Elevation 동일 시 SK_EQ_ID 첫 등장 층 기준.
+    1차: IFCBUILDINGSTOREY prim의 world Z xform으로 층 Z 범위 계산, 장비 world Z 검증.
+    폴백: 모든 층 world Z 동일(< 0.01m) 시 SK_EQ_ID 첫 등장 층 기준.
     """
+    xf_cache = UsdGeom.XformCache(_TC)
+
     floors = []
     for prim in stage.TraverseAll():
         if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
@@ -56,24 +58,21 @@ def get_floor_names(stage) -> set[str]:
         name = _get_attr(prim, ATTR_LEVEL_NAME)
         if not name:
             continue
-        elev = _get_attr(prim, ATTR_ELEVATION)
-        floors.append((float(elev) if elev is not None else 0.0,
-                       str(name).strip(), prim))
+        world_z = _eq_world_z(prim, xf_cache) or 0.0
+        floors.append((world_z, str(name).strip(), prim))
 
     if not floors:
         return set()
 
     floors.sort(key=lambda x: x[0])
-    elevations = [f[0] for f in floors]
-    all_same = (max(elevations) - min(elevations)) < 1000.0  # 실제 층간 간격은 수천mm; 1m 미만 차이면 동일로 처리
+    zs = [f[0] for f in floors]
+    all_same = (max(zs) - min(zs)) < 0.01  # 1cm 미만 차이면 동일로 처리
 
     names: set[str] = set()
 
     if not all_same:
-        xf_cache = UsdGeom.XformCache(_TC)
-        for i, (elev, floor_name, floor_prim) in enumerate(floors):
-            z_min = elev / 1000.0
-            z_max = floors[i + 1][0] / 1000.0 if i + 1 < len(floors) else float("inf")
+        for i, (z_min, floor_name, floor_prim) in enumerate(floors):
+            z_max = floors[i + 1][0] if i + 1 < len(floors) else float("inf")
             for child in Usd.PrimRange(floor_prim):
                 if child == floor_prim:
                     continue
