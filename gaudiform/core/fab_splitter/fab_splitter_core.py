@@ -249,6 +249,7 @@ def process_stage(
 
     src_basename  = os.path.splitext(os.path.basename(usd_file_path))[0]
     safe_basename = _sanitize_filename(src_basename)
+    output_directory = os.path.join(output_directory, safe_basename)
     os.makedirs(output_directory, exist_ok=True)
 
     util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(stage, cfg, log=log)
