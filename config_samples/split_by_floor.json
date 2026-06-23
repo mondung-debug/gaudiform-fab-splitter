@@ -29,7 +29,8 @@
                             "params": {
                                 "util_categories":       ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
                                 "output_ext":            ".usd",
-                                "prototype_scope_names": ["Prototypes"]
+                                "prototype_scope_names": ["Prototypes"],
+                                "subfolder_per_file":    true
                             }
                         }
                     ]
