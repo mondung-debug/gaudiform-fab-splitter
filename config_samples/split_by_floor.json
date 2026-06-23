@@ -1,0 +1,46 @@
+{
+    "_comment": "배관류(_util.usd)와 층별 파일({파일명}_{층이름}.usd)로 분리하는 샘플",
+    "tasks": [
+        {
+            "common": {
+                "scheduling_file_max_count": 8,
+                "input_path": "C:/project/usd_files",
+                "input_extension": ".usd",
+                "output_directory": "C:/project/output",
+                "recursive": true
+            },
+            "scheduler": {
+                "resume": {
+                    "enable": false
+                },
+                "convert": {
+                    "enable": false
+                },
+                "scene_optimizer": {
+                    "enable": false
+                },
+                "post_processing": {
+                    "enable": true,
+                    "operations": [
+                        {
+                            "enable": true,
+                            "operation": "external",
+                            "script": "C:/path/to/gaudiform-fab-splitter/gaudiform/core/fab_splitter/fab_splitter_operation.py",
+                            "params": {
+                                "util_categories":       ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+                                "output_ext":            ".usd",
+                                "prototype_scope_names": ["Prototypes"]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "log": {
+        "enable": true,
+        "directory": "C:/project/logs"
+    },
+    "cadConverterConfig": {},
+    "sceneOptimizerConfig": {}
+}

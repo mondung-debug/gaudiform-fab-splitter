@@ -74,7 +74,7 @@ class FabSplitterOperation(PostProcessOperation):
             stage = Usd.Stage.Open(anon_layer)
             used_layers = list(stage.GetUsedLayers())
 
-            eqp_count, util_count, infra_count = process_stage(
+            util_count, floor_count, no_level_count = process_stage(
                 stage=stage,
                 usd_file_path=usd_file_path,
                 output_directory=output_directory,
@@ -84,7 +84,7 @@ class FabSplitterOperation(PostProcessOperation):
 
             context.on_info(
                 _TAG,
-                f"완료: EQP {eqp_count}개 + UTIL {util_count}개 + INFRA {infra_count}개 파일 생성"
+                f"완료: UTIL {util_count}개 + 층별 {floor_count}개 + NO_LEVEL {no_level_count}개 파일 생성"
             )
         finally:
             for layer in used_layers:

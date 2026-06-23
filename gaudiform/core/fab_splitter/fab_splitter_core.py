@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-FabSplitter core logic — USD stage를 EQP/UTIL/INFRA로 분리.
+FabSplitter core logic — USD stage를 배관류(_util)와 층별 파일로 분리.
 pxr 단독으로 동작 (Kit/Omniverse 불필요).
 """
 
@@ -15,48 +15,21 @@ from pxr import Sdf, Usd, UsdGeom
 # ── Metadata attribute names (Hoops Connector 규칙) ───────────────────────────
 
 ATTR_CATEGORY   = "omni:hoops:metadata:Other:Category"
-ATTR_SK_EQ_ID   = "omni:hoops:metadata:tn__IdentityData_qC:SK_EQ_ID"
-ATTR_EQP_CODE   = "omni:hoops:metadata:tn___CODE_gXt8ajG:장비_CODE"
 ATTR_LEVEL_NAME = "omni:hoops:metadata:tn__IdentityData_qC:Name"
 ATTR_TYPE       = "omni:hoops:metadata:TYPE"
-
-# SK_EQ_ID 폴백 순서: 장비_CODE → SK_TEMP / SK_TEMP1 / SK_TEMP2
-_SK_TEMP_NAMESPACE = "omni:hoops:metadata:tn__IdentityData_qC"
-_SK_TEMP_NAMES     = ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"]
 
 # ── Default config ─────────────────────────────────────────────────────────────
 
 DEFAULT_CFG = {
-    "target_floor_name":      "9th FL",
-    "floor_z_min":            0.0,
-    "floor_z_max":            0.0,
-    "floor_z_auto":           True,
-    "target_category":        "Mechanical Equipment",
-    "util_categories":        ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
-    "output_prefix_eqp":      "EQP_",
-    "output_prefix_util":     "UTIL_",
-    "output_prefix_infra":    "INFRA_",
-    "output_ext":             ".usd",
-    "split_output_folders":   True,
-    "normalize_sk_eq_id":     True,        # _숫자 suffix 자동 제거 (abc123_1 → abc123)
-    "log_sk_eq_id_fix":       True,        # 수정된 SK_EQ_ID 로그 출력
-    "prototype_scope_names":  ["Prototypes"],  # defaultPrim 하위 prototype 스코프 이름 목록
-    "sk_temp_attr_names":     ["SK_TEMP", "SK_TEMP1", "SK_TEMP2"],  # SK_EQ_ID/장비_CODE 없을 때 폴백
+    "util_categories":       ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+    "output_ext":            ".usd",
+    "prototype_scope_names": ["Prototypes"],
 }
 
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-_SK_EQ_ID_SUFFIX_RE  = re.compile(r'_\d+$')
-_UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|\u20a9]')  # ₩ = \u20a9
-
-def _normalize_sk_eq_id(raw_id: str) -> str:
-    """SK_EQ_ID 끝의 _숫자 suffix 제거. ex) abc123_1 → abc123"""
-    return _SK_EQ_ID_SUFFIX_RE.sub('', raw_id)
+_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|₩]')
 
 
 def _sanitize_filename(s: str) -> str:
-    """파일명에 사용 불가한 문자를 _ 로 치환."""
     return _UNSAFE_FILENAME_RE.sub('_', s)
 
 
@@ -65,31 +38,6 @@ def _get_attr(prim, attr_name):
     if attr and attr.HasValue():
         return attr.Get()
     return None
-
-
-def find_floor_levels(stage) -> dict[str, float]:
-    """IFCBUILDINGSTOREY xformOp world Z 수집 → {name: z}"""
-    levels: dict[str, float] = {}
-    for prim in stage.TraverseAll():
-        if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
-            continue
-        name = _get_attr(prim, ATTR_LEVEL_NAME)
-        if name and name not in levels:
-            xf  = UsdGeom.Xformable(prim)
-            mat = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            levels[name] = mat.ExtractTranslation()[2]
-    return levels
-
-
-def _is_bbox_in_range(prim, bbox_cache, z_min, z_max) -> bool:
-    try:
-        bbox  = bbox_cache.ComputeWorldBound(prim)
-        rng   = bbox.ComputeAlignedRange()
-        if rng.IsEmpty():
-            return False
-        return rng.GetMin()[2] <= z_max and rng.GetMax()[2] >= z_min
-    except Exception:
-        return False
 
 
 def _level_ancestor(prim):
@@ -103,104 +51,40 @@ def _level_ancestor(prim):
 
 # ── Collection ─────────────────────────────────────────────────────────────────
 
-def collect_components(
-    stage,
-    bbox_cache,
-    cfg: dict,
-    log=print,
-) -> tuple[dict, dict]:
-    """EQP / UTIL dict 반환. {sk_eq_id: [SdfPath, ...]}"""
-    z_min        = cfg["floor_z_min"]
-    z_max        = cfg["floor_z_max"]
-    target_floor = cfg["target_floor_name"]
-    target_cat   = cfg["target_category"]
+def collect_by_util_and_floor(stage, cfg, log=print):
+    """
+    Returns:
+        util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트
+        floor_dict:    dict[str, list[SdfPath]] — 나머지, 층별 분류
+        no_level_paths: list[SdfPath] — 층 정보 없는 나머지
+    """
     util_cat_set = set(cfg.get("util_categories", []))
-
-    do_normalize  = cfg.get("normalize_sk_eq_id", True)
-    do_log_fix    = cfg.get("log_sk_eq_id_fix", True)
-
-    eqp_code_attr = ATTR_EQP_CODE
-    sk_temp_attrs = [f"{_SK_TEMP_NAMESPACE}:{n}"
-                     for n in cfg.get("sk_temp_attr_names", _SK_TEMP_NAMES)]
-    src_basename  = cfg.get("_src_basename", "")
-
-    eqp_dict: dict  = {}
-    util_dict: dict = {}
-    stats = {"total": 0, "eqp": 0, "util_cat": 0,
-             "util_height": 0, "infra_no_id": 0, "infra_other": 0,
-             "id_fixed": 0, "eqp_code": 0, "sk_temp": 0}
+    util_paths: list = []
+    floor_dict: dict = {}
+    no_level_paths: list = []
+    total = 0
 
     for prim in stage.TraverseAll():
         if prim.IsInstanceProxy():
             continue
         if Usd.ModelAPI(prim).GetKind() != "component":
             continue
-        stats["total"] += 1
+        total += 1
 
-        sk_eq_id = _get_attr(prim, ATTR_SK_EQ_ID)
-        if not sk_eq_id:
-            # 1순위 폴백: 장비_CODE
-            val = _get_attr(prim, eqp_code_attr)
-            if val:
-                sk_eq_id = str(val)
-                stats["eqp_code"] += 1
-                log(f"  [EQP_CODE] {prim.GetPath().name}: SK_EQ_ID 없음 → 장비_CODE='{sk_eq_id}'")
-        if not sk_eq_id:
-            # 2순위 폴백: SK_TEMP / SK_TEMP1 / SK_TEMP2
-            for attr in sk_temp_attrs:
-                val = _get_attr(prim, attr)
-                if val:
-                    sk_eq_id = str(val)
-                    stats["sk_temp"] += 1
-                    log(f"  [SK_TEMP] {prim.GetPath().name}: SK_EQ_ID 없음 → {attr.rsplit(':', 1)[-1]}='{sk_eq_id}'")
-                    break
-
-        # 카테고리는 ID 유무와 무관하게 항상 조회
-        cat        = _get_attr(prim, ATTR_CATEGORY)
-        level_prim = _level_ancestor(prim)
-        level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
-
-        if not sk_eq_id:
-            # ID 없음: util_categories에 속하면 파일명 그룹으로 UTIL, 그 외는 INFRA
-            if cat in util_cat_set:
-                fallback_id = src_basename or "_noID"
-                util_dict.setdefault(fallback_id, []).append(prim.GetPath())
-                stats["util_cat"] += 1
-            else:
-                stats["infra_no_id"] += 1
-            continue
-
-        sk_eq_id = str(sk_eq_id)
-        if do_normalize:
-            normalized = _normalize_sk_eq_id(sk_eq_id)
-            if normalized != sk_eq_id:
-                stats["id_fixed"] += 1
-                if do_log_fix:
-                    log(f"  [SK_EQ_ID FIX] {prim.GetPath().name}: '{sk_eq_id}' -> '{normalized}'")
-                sk_eq_id = normalized
-
-        if cat == target_cat:
-            if _is_bbox_in_range(prim, bbox_cache, z_min, z_max):
-                stats["eqp"] += 1
-                if level_name != target_floor:
-                    log(f"  [EQP HEIGHT-MATCH] {prim.GetPath().name} (SK={sk_eq_id})"
-                        f" on '{level_name}' but within {target_floor} height range")
-                eqp_dict.setdefault(sk_eq_id, []).append(prim.GetPath())
-            else:
-                stats["util_height"] += 1
-                util_dict.setdefault(sk_eq_id, []).append(prim.GetPath())
-        elif cat in util_cat_set:
-            stats["util_cat"] += 1
-            util_dict.setdefault(sk_eq_id, []).append(prim.GetPath())
+        cat = _get_attr(prim, ATTR_CATEGORY)
+        if cat in util_cat_set:
+            util_paths.append(prim.GetPath())
         else:
-            stats["infra_other"] += 1
+            level_prim = _level_ancestor(prim)
+            level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
+            if level_name:
+                floor_dict.setdefault(level_name, []).append(prim.GetPath())
+            else:
+                no_level_paths.append(prim.GetPath())
 
-    log(f"  Collection: total={stats['total']}, "
-        f"EQP={stats['eqp']} ({len(eqp_dict)} IDs), "
-        f"UTIL_cat={stats['util_cat']}, UTIL_height={stats['util_height']}, "
-        f"INFRA_no_id={stats['infra_no_id']}, INFRA_other={stats['infra_other']}, "
-        f"ID_fixed={stats['id_fixed']}, EQP_CODE={stats['eqp_code']}, SK_TEMP={stats['sk_temp']}")
-    return eqp_dict, util_dict
+    log(f"  Collection: total={total}, util={len(util_paths)}, "
+        f"floors={sorted(floor_dict.keys())}, no_level={len(no_level_paths)}")
+    return util_paths, floor_dict, no_level_paths
 
 
 # ── Export helpers ─────────────────────────────────────────────────────────────
@@ -256,13 +140,7 @@ def _ensure_ancestors(src_stage, dst_layer, prim_path) -> None:
             pass
 
 
-
 def _collect_sdf_internal_refs(src_layer, comp_path: Sdf.Path) -> set:
-    """컴포넌트 SDF spec tree에서 같은 레이어 내부를 참조하는 외부 prim 경로 수집.
-
-    USD reference / payload 아크 중 assetPath가 없고(같은 파일)
-    컴포넌트 경로 밖을 가리키는 primPath를 반환한다.
-    """
     targets: set = set()
 
     def _walk(spec):
@@ -282,7 +160,6 @@ def _collect_sdf_internal_refs(src_layer, comp_path: Sdf.Path) -> set:
 
 
 def _copy_external_prims(src_stage, src_layer, dst_layer, paths) -> None:
-    """paths에 있는 prim을 dst_layer에 복사 (ancestors 포함). 이미 있으면 스킵."""
     for path in paths:
         if dst_layer.GetPrimAtPath(path):
             continue
@@ -297,10 +174,6 @@ def _copy_external_prims(src_stage, src_layer, dst_layer, paths) -> None:
 
 
 def _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg) -> None:
-    """prototype_scope_names 목록의 prim을 defaultPrim 하위에서 찾아 복사.
-
-    SDF 레이어를 직접 조회하므로 stage 컴포지션 영향을 받지 않는다.
-    """
     scope_names = cfg.get("prototype_scope_names", ["Prototypes"])
     if not scope_names or not src_layer.defaultPrim:
         return
@@ -311,7 +184,6 @@ def _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg) -> None:
             continue
         if dst_layer.GetPrimAtPath(child_path):
             continue
-        # defaultPrim 컨테이너는 _ensure_ancestors 대신 직접 확인
         if not dst_layer.GetPrimAtPath(default_path):
             dp_spec = src_layer.GetPrimAtPath(default_path)
             if dp_spec:
@@ -325,16 +197,17 @@ def _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg) -> None:
             pass
 
 
-def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) -> tuple[str, str]:
-    """Returns (output_path, safe_id). safe_id == sk_eq_id if no sanitization needed."""
-    src_layer   = src_stage.GetRootLayer()
-    safe_id     = _sanitize_filename(sk_eq_id)
-    output_path = os.path.join(output_dir, f"{prefix}{safe_id}{cfg['output_ext']}")
-    dst_layer   = Sdf.Layer.CreateAnonymous()
+def export_paths(src_stage, paths, output_path, cfg, log=print) -> str:
+    """paths 목록을 output_path에 하나의 USD로 저장."""
+    src_layer = src_stage.GetRootLayer()
+    dst_layer = Sdf.Layer.CreateAnonymous()
     _copy_stage_metadata(src_layer, dst_layer)
-    for comp_path in component_paths:
-        _ensure_ancestors(src_stage, dst_layer, comp_path)
-        Sdf.CopySpec(src_layer, comp_path, dst_layer, comp_path)
+    for path in paths:
+        _ensure_ancestors(src_stage, dst_layer, path)
+        try:
+            Sdf.CopySpec(src_layer, path, dst_layer, path)
+        except Exception:
+            pass
     for root_spec in src_layer.rootPrims:
         if root_spec.path.name == src_layer.defaultPrim:
             continue
@@ -343,57 +216,19 @@ def export_group(src_stage, sk_eq_id, component_paths, output_dir, prefix, cfg) 
                 Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
             except Exception:
                 pass
-    # bInstancing 지원: SDF 참조 기반 + 이름 기반으로 prototype 복사
     ref_targets: set = set()
-    for comp_path in component_paths:
-        ref_targets |= _collect_sdf_internal_refs(src_layer, comp_path)
+    for path in paths:
+        ref_targets |= _collect_sdf_internal_refs(src_layer, path)
     _copy_external_prims(src_stage, src_layer, dst_layer, ref_targets)
     _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg)
     dst_layer.Export(output_path)
     dst_layer.Clear()
     del dst_layer
     gc.collect()
-    return output_path, safe_id
-
-
-def export_infra(src_stage, excluded_paths, output_dir, filename, cfg) -> tuple[str, int]:
-    src_layer   = src_stage.GetRootLayer()
-    output_path = os.path.join(
-        output_dir, f"{cfg['output_prefix_infra']}{filename}{cfg['output_ext']}")
-    dst_layer   = Sdf.Layer.CreateAnonymous()
-    _copy_stage_metadata(src_layer, dst_layer)
-    for root_spec in src_layer.rootPrims:
-        try:
-            Sdf.CopySpec(src_layer, root_spec.path, dst_layer, root_spec.path)
-        except Exception:
-            pass
-    removed = 0
-    for path in excluded_paths:
-        if dst_layer.GetPrimAtPath(path):
-            parent_spec = dst_layer.GetPrimAtPath(path.GetParentPath())
-            if parent_spec:
-                try:
-                    del parent_spec.nameChildren[path.name]
-                    removed += 1
-                except Exception:
-                    pass
-    dst_layer.Export(output_path)
-    dst_layer.Clear()
-    del dst_layer
-    gc.collect()
-    return output_path, removed
+    return output_path
 
 
 # ── Main process ───────────────────────────────────────────────────────────────
-
-def _get_output_dir(base_dir, category, src_basename, cfg) -> str:
-    if cfg.get("split_output_folders", True):
-        d = os.path.join(base_dir, category, src_basename)
-    else:
-        d = os.path.join(base_dir, src_basename)
-    os.makedirs(d, exist_ok=True)
-    return d
-
 
 def process_stage(
     stage,
@@ -403,91 +238,45 @@ def process_stage(
     log=print,
 ) -> tuple[int, int, int]:
     """
-    stage를 EQP/UTIL/INFRA로 분리해서 output_directory에 저장.
+    stage를 배관류(_util)와 층별 파일로 분리해서 output_directory에 저장.
 
     Returns:
-        (eqp_count, util_count, infra_count)
+        (util_count, floor_count, no_level_count)
     """
     merged = dict(DEFAULT_CFG)
     merged.update(cfg)
     cfg = merged
 
-    src_basename = os.path.splitext(os.path.basename(usd_file_path))[0]
-    cfg = dict(cfg)
-    cfg["_src_basename"] = src_basename  # collect_components에서 파일명 폴백용
-    bbox_cache   = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    src_basename  = os.path.splitext(os.path.basename(usd_file_path))[0]
+    safe_basename = _sanitize_filename(src_basename)
+    os.makedirs(output_directory, exist_ok=True)
 
-    # 층 Z 범위 결정
-    levels = find_floor_levels(stage)
-    for name, z in sorted(levels.items(), key=lambda x: x[1]):
-        marker = " ← TARGET" if name == cfg["target_floor_name"] else ""
-        log(f"  [FLOOR] {name}: Z={z:.3f}m{marker}")
+    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(stage, cfg, log=log)
 
-    if cfg.get("floor_z_auto"):
-        target_z = levels.get(cfg["target_floor_name"])
-        if target_z is None:
-            log(f"  [WARN] '{cfg['target_floor_name']}' not found in stage")
-            return 0, 0, 0
-        sorted_z = sorted(levels.values())
-        idx      = sorted_z.index(target_z)
-        z_min    = target_z
-        z_max    = sorted_z[idx + 1] if idx + 1 < len(sorted_z) else target_z + 10.0
-        cfg = dict(cfg)
-        cfg["floor_z_min"] = z_min
-        cfg["floor_z_max"] = z_max
-        log(f"  [AUTO] '{cfg['target_floor_name']}' Z={target_z:.3f} → range: [{z_min:.3f}, {z_max:.3f}]")
-    else:
-        log(f"  [CONFIG] height range: [{cfg['floor_z_min']:.1f}, {cfg['floor_z_max']:.1f}]")
+    util_count     = 0
+    floor_count    = 0
+    no_level_count = 0
 
-    eqp_dict, util_dict = collect_components(stage, bbox_cache, cfg, log=log)
-    del bbox_cache
-    gc.collect()
+    # 배관류 → {파일명}_util.usd
+    if util_paths:
+        util_output = os.path.join(output_directory, f"{safe_basename}_util{cfg['output_ext']}")
+        export_paths(stage, util_paths, util_output, cfg, log=log)
+        log(f"  [UTIL] {len(util_paths)} prims → {util_output}")
+        util_count = 1
 
-    # EQP 저장
-    sanitize_log: list[tuple[str, str, str]] = []  # (category, original, safe)
-    eqp_out_dir = _get_output_dir(output_directory, "EQP", src_basename, cfg)
-    for sk_eq_id, paths in sorted(eqp_dict.items()):
-        out, safe_id = export_group(stage, sk_eq_id, paths, eqp_out_dir,
-                                    cfg["output_prefix_eqp"], cfg)
-        if safe_id != sk_eq_id:
-            sanitize_log.append(("EQP", sk_eq_id, safe_id))
-            log(f"  [EQP] {sk_eq_id} → (sanitized: {safe_id}) ({len(paths)} prims) → {out}")
-        else:
-            log(f"  [EQP] {sk_eq_id} ({len(paths)} prims) → {out}")
+    # 층별 → {파일명}_{층이름}.usd
+    for level_name, paths in sorted(floor_dict.items()):
+        safe_level   = _sanitize_filename(level_name)
+        floor_output = os.path.join(output_directory, f"{safe_basename}_{safe_level}{cfg['output_ext']}")
+        export_paths(stage, paths, floor_output, cfg, log=log)
+        log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
+        floor_count += 1
 
-    # UTIL 저장
-    util_out_dir = _get_output_dir(output_directory, "UTIL", src_basename, cfg)
-    for sk_eq_id, paths in sorted(util_dict.items()):
-        out, safe_id = export_group(stage, sk_eq_id, paths, util_out_dir,
-                                    cfg["output_prefix_util"], cfg)
-        if safe_id != sk_eq_id:
-            sanitize_log.append(("UTIL", sk_eq_id, safe_id))
-            log(f"  [UTIL] {sk_eq_id} → (sanitized: {safe_id}) ({len(paths)} prims) → {out}")
-        else:
-            log(f"  [UTIL] {sk_eq_id} ({len(paths)} prims) → {out}")
+    # 층 정보 없는 나머지 → {파일명}_no_level.usd
+    if no_level_paths:
+        no_level_output = os.path.join(output_directory, f"{safe_basename}_no_level{cfg['output_ext']}")
+        export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
+        log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
+        no_level_count = 1
 
-    # sanitize 로그 파일 저장
-    if sanitize_log:
-        log_path = os.path.join(output_directory, f"sanitize_log_{src_basename}.tsv")
-        with open(log_path, "w", encoding="utf-8") as f:
-            f.write("category\toriginal_sk_eq_id\tsanitized_filename\n")
-            for cat, orig, safe in sanitize_log:
-                f.write(f"{cat}\t{orig}\t{safe}\n")
-        log(f"  [SANITIZE LOG] {len(sanitize_log)}건 기록 → {log_path}")
-
-    # INFRA 저장
-    infra_out_dir = _get_output_dir(output_directory, "INFRA", src_basename, cfg)
-    all_paths     = [p for ps in eqp_dict.values() for p in ps] + \
-                    [p for ps in util_dict.values() for p in ps]
-    infra_count = 0
-    if all_paths:
-        infra_path, removed = export_infra(stage, all_paths, infra_out_dir,
-                                           src_basename, cfg)
-        log(f"  [INFRA] removed {removed} prims → {infra_path}")
-        infra_count = 1
-
-    eqp_n, util_n = len(eqp_dict), len(util_dict)
-    del eqp_dict, util_dict, all_paths
-    gc.collect()
-
-    return eqp_n, util_n, infra_count
+    return util_count, floor_count, no_level_count
