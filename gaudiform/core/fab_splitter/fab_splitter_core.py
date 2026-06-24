@@ -25,13 +25,27 @@ DEFAULT_CFG = {
     "output_ext":            ".usd",
     "prototype_scope_names": ["Prototypes"],
     "subfolder_per_file":    True,
+    "normalize_level_name":  False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
 }
 
-_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|₩]')
+_UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
+_FLOOR_NORMALIZE_RE  = re.compile(
+    r'^(B?\d+)\s*(?:ST|ND|RD|TH)?\s*(?:FL(?:OOR)?|F|층)?$',
+    re.IGNORECASE,
+)
 
 
 def _sanitize_filename(s: str) -> str:
     return _UNSAFE_FILENAME_RE.sub('_', s)
+
+
+def _normalize_level_name(name: str) -> str:
+    """층 이름 정규화. 예) '9th FL' → '9F', 'B1 FL' → 'B1F', '1층' → '1F'"""
+    s = name.strip()
+    m = _FLOOR_NORMALIZE_RE.match(s)
+    if m:
+        return f"{m.group(1).upper()}F"
+    return s
 
 
 def _get_attr(prim, attr_name):
@@ -59,7 +73,8 @@ def collect_by_util_and_floor(stage, cfg, log=print):
         floor_dict:    dict[str, list[SdfPath]] — 나머지, 층별 분류
         no_level_paths: list[SdfPath] — 층 정보 없는 나머지
     """
-    util_cat_set = set(cfg.get("util_categories", []))
+    util_cat_set   = set(cfg.get("util_categories", []))
+    do_normalize   = cfg.get("normalize_level_name", False)
     util_paths: list = []
     floor_dict: dict = {}
     no_level_paths: list = []
@@ -79,6 +94,8 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             level_prim = _level_ancestor(prim)
             level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
             if level_name:
+                if do_normalize:
+                    level_name = _normalize_level_name(level_name)
                 floor_dict.setdefault(level_name, []).append(prim.GetPath())
             else:
                 no_level_paths.append(prim.GetPath())
