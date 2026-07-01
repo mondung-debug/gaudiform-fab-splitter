@@ -81,8 +81,6 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     total = 0
 
     for prim in stage.TraverseAll():
-        if prim.IsInstanceProxy():
-            continue
         if Usd.ModelAPI(prim).GetKind() != "component":
             continue
         total += 1
@@ -271,7 +269,16 @@ def process_stage(
         output_directory = os.path.join(output_directory, safe_basename)
     os.makedirs(output_directory, exist_ok=True)
 
-    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(stage, cfg, log=log)
+    # 인스턴스(prototype)가 있으면 flatten해서 프록시 없이 처리
+    if stage.GetPrototypes():
+        log("  [INFO] Prototype 감지 → stage flatten 처리 중...")
+        flat_layer = stage.Flatten()
+        work_stage = Usd.Stage.Open(flat_layer)
+        log("  [INFO] Flatten 완료")
+    else:
+        work_stage = stage
+
+    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(work_stage, cfg, log=log)
 
     util_count     = 0
     floor_count    = 0
@@ -280,7 +287,7 @@ def process_stage(
     # 배관류 → {파일명}_util.usd
     if util_paths:
         util_output = os.path.join(output_directory, f"{safe_basename}_util{cfg['output_ext']}")
-        export_paths(stage, util_paths, util_output, cfg, log=log)
+        export_paths(work_stage, util_paths, util_output, cfg, log=log)
         log(f"  [UTIL] {len(util_paths)} prims → {util_output}")
         util_count = 1
 
@@ -288,15 +295,20 @@ def process_stage(
     for level_name, paths in sorted(floor_dict.items()):
         safe_level   = _sanitize_filename(level_name)
         floor_output = os.path.join(output_directory, f"{safe_basename}_{safe_level}{cfg['output_ext']}")
-        export_paths(stage, paths, floor_output, cfg, log=log)
+        export_paths(work_stage, paths, floor_output, cfg, log=log)
         log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
         floor_count += 1
 
     # 층 정보 없는 나머지 → {파일명}_no_level.usd
     if no_level_paths:
         no_level_output = os.path.join(output_directory, f"{safe_basename}_no_level{cfg['output_ext']}")
-        export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
+        export_paths(work_stage, no_level_paths, no_level_output, cfg, log=log)
         log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
         no_level_count = 1
+
+    # flatten한 경우 임시 스테이지 정리
+    if work_stage is not stage:
+        del work_stage
+        gc.collect()
 
     return util_count, floor_count, no_level_count
