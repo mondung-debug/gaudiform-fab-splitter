@@ -64,6 +64,16 @@ def _level_ancestor(prim):
     return None
 
 
+def _find_instance_root(prim):
+    """instance proxy 프림에서 실제 instance prim(IsInstance=True) 반환."""
+    current = prim
+    while current.IsValid() and not current.IsPseudoRoot():
+        if current.IsInstance():
+            return current
+        current = current.GetParent()
+    return None
+
+
 # ── Collection ─────────────────────────────────────────────────────────────────
 
 def collect_by_util_and_floor(stage, cfg, log=print):
@@ -78,6 +88,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     util_paths: list = []
     floor_dict: dict = {}
     no_level_paths: list = []
+    seen: set  = set()
     total = 0
 
     for prim in stage.TraverseAll():
@@ -85,18 +96,33 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             continue
         total += 1
 
+        # instance proxy인 경우 → instance root 경로로 export
+        if prim.IsInstanceProxy():
+            inst_root = _find_instance_root(prim)
+            if inst_root is None:
+                continue
+            export_path = inst_root.GetPath()
+        else:
+            export_path = prim.GetPath()
+
+        # 같은 instance root가 중복 수집되지 않도록
+        if export_path in seen:
+            continue
+        seen.add(export_path)
+
+        # 메타데이터는 proxy에서 읽기 (attribute 상속 지원)
         cat = _get_attr(prim, ATTR_CATEGORY)
         if cat in util_cat_set:
-            util_paths.append(prim.GetPath())
+            util_paths.append(export_path)
         else:
             level_prim = _level_ancestor(prim)
             level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
             if level_name:
                 if do_normalize:
                     level_name = _normalize_level_name(level_name)
-                floor_dict.setdefault(level_name, []).append(prim.GetPath())
+                floor_dict.setdefault(level_name, []).append(export_path)
             else:
-                no_level_paths.append(prim.GetPath())
+                no_level_paths.append(export_path)
 
     log(f"  Collection: total={total}, util={len(util_paths)}, "
         f"floors={sorted(floor_dict.keys())}, no_level={len(no_level_paths)}")
@@ -189,6 +215,18 @@ def _copy_external_prims(src_stage, src_layer, dst_layer, paths) -> None:
             pass
 
 
+def _copy_usd_prototypes(src_layer, dst_layer) -> None:
+    """USD 자동 인스턴싱 프로토타입(/__Prototype_N) 전체 복사."""
+    for root_spec in src_layer.rootPrims:
+        path = root_spec.path
+        if str(path).startswith("/__Prototype_"):
+            if not dst_layer.GetPrimAtPath(path):
+                try:
+                    Sdf.CopySpec(src_layer, path, dst_layer, path)
+                except Exception:
+                    pass
+
+
 def _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg) -> None:
     scope_names = cfg.get("prototype_scope_names", ["Prototypes"])
     if not scope_names or not src_layer.defaultPrim:
@@ -236,6 +274,7 @@ def export_paths(src_stage, paths, output_path, cfg, log=print) -> str:
     for path in paths:
         ref_targets |= _collect_sdf_internal_refs(src_layer, path)
     _copy_external_prims(src_stage, src_layer, dst_layer, ref_targets)
+    _copy_usd_prototypes(src_layer, dst_layer)
     _copy_prototype_scopes_by_name(src_layer, dst_layer, cfg)
     dst_layer.Export(output_path)
     dst_layer.Clear()
@@ -269,16 +308,7 @@ def process_stage(
         output_directory = os.path.join(output_directory, safe_basename)
     os.makedirs(output_directory, exist_ok=True)
 
-    # 인스턴스(prototype)가 있으면 flatten해서 프록시 없이 처리
-    if stage.GetPrototypes():
-        log("  [INFO] Prototype 감지 → stage flatten 처리 중...")
-        flat_layer = stage.Flatten()
-        work_stage = Usd.Stage.Open(flat_layer)
-        log("  [INFO] Flatten 완료")
-    else:
-        work_stage = stage
-
-    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(work_stage, cfg, log=log)
+    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(stage, cfg, log=log)
 
     util_count     = 0
     floor_count    = 0
@@ -287,7 +317,7 @@ def process_stage(
     # 배관류 → {파일명}_util.usd
     if util_paths:
         util_output = os.path.join(output_directory, f"{safe_basename}_util{cfg['output_ext']}")
-        export_paths(work_stage, util_paths, util_output, cfg, log=log)
+        export_paths(stage, util_paths, util_output, cfg, log=log)
         log(f"  [UTIL] {len(util_paths)} prims → {util_output}")
         util_count = 1
 
@@ -295,20 +325,15 @@ def process_stage(
     for level_name, paths in sorted(floor_dict.items()):
         safe_level   = _sanitize_filename(level_name)
         floor_output = os.path.join(output_directory, f"{safe_basename}_{safe_level}{cfg['output_ext']}")
-        export_paths(work_stage, paths, floor_output, cfg, log=log)
+        export_paths(stage, paths, floor_output, cfg, log=log)
         log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
         floor_count += 1
 
     # 층 정보 없는 나머지 → {파일명}_no_level.usd
     if no_level_paths:
         no_level_output = os.path.join(output_directory, f"{safe_basename}_no_level{cfg['output_ext']}")
-        export_paths(work_stage, no_level_paths, no_level_output, cfg, log=log)
+        export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
         log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
         no_level_count = 1
-
-    # flatten한 경우 임시 스테이지 정리
-    if work_stage is not stage:
-        del work_stage
-        gc.collect()
 
     return util_count, floor_count, no_level_count
