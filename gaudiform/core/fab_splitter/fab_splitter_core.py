@@ -26,6 +26,7 @@ DEFAULT_CFG = {
     "prototype_scope_names": ["Prototypes"],
     "subfolder_per_file":    True,
     "normalize_level_name":  False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
+    "suffix_sep":            "@",     # 파일명 구분자: {basename}@{suffix}.usd
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -314,24 +315,26 @@ def process_stage(
     floor_count    = 0
     no_level_count = 0
 
-    # 배관류 → {파일명}_util.usd
+    sep = cfg.get("suffix_sep", "@")
+
+    # 배관류 → {파일명}@util.usd
     if util_paths:
-        util_output = os.path.join(output_directory, f"{safe_basename}_util{cfg['output_ext']}")
+        util_output = os.path.join(output_directory, f"{safe_basename}{sep}util{cfg['output_ext']}")
         export_paths(stage, util_paths, util_output, cfg, log=log)
         log(f"  [UTIL] {len(util_paths)} prims → {util_output}")
         util_count = 1
 
-    # 층별 → {파일명}_{층이름}.usd
+    # 층별 → {파일명}@{층이름}.usd
     for level_name, paths in sorted(floor_dict.items()):
         safe_level   = _sanitize_filename(level_name)
-        floor_output = os.path.join(output_directory, f"{safe_basename}_{safe_level}{cfg['output_ext']}")
+        floor_output = os.path.join(output_directory, f"{safe_basename}{sep}{safe_level}{cfg['output_ext']}")
         export_paths(stage, paths, floor_output, cfg, log=log)
         log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
         floor_count += 1
 
-    # 층 정보 없는 나머지 → {파일명}_no_level.usd
+    # 층 정보 없는 나머지 → {파일명}@no_level.usd
     if no_level_paths:
-        no_level_output = os.path.join(output_directory, f"{safe_basename}_no_level{cfg['output_ext']}")
+        no_level_output = os.path.join(output_directory, f"{safe_basename}{sep}no_level{cfg['output_ext']}")
         export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
         log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
         no_level_count = 1
