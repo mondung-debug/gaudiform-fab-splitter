@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc
 import os
 import re
+import shutil
 
 from pxr import Sdf, Usd, UsdGeom
 
@@ -338,5 +339,10 @@ def process_stage(
         export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
         log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
         no_level_count = 1
+
+    # 원본 USD → {파일명}@All.usd 로 복사
+    all_output = os.path.join(output_directory, f"{safe_basename}{sep}all{cfg['output_ext']}")
+    shutil.copy2(usd_file_path, all_output)
+    log(f"  [ALL] 원본 복사 → {all_output}")
 
     return util_count, floor_count, no_level_count
