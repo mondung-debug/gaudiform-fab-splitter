@@ -88,15 +88,17 @@ def _build_floor_z_table(stage):
     return result
 
 
-def _classify_floor_by_z(prim, floor_z_table, bbox_cache):
-    """장비 프림의 bbox Z min 기준으로 층 이름 반환. 매칭 안 되면 None."""
+def _classify_floor_by_z(prim, floor_z_table, _bbox_cache=None):
+    """장비 프림의 월드 origin Z 기준으로 층 이름 반환. 매칭 안 되면 None.
+
+    BBoxCache는 extent hint 없는 prim에서 empty를 반환할 수 있어 사용하지 않음.
+    대신 prim origin의 world Z (ComputeLocalToWorldTransform)를 사용.
+    """
     if not floor_z_table:
         return None
     try:
-        bound = bbox_cache.ComputeWorldBound(prim)
-        if bound.GetRange().IsEmpty():
-            return None
-        z = bound.GetRange().GetMin()[2]
+        mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        z = mat.ExtractTranslation()[2]
     except Exception:
         return None
 
@@ -149,13 +151,9 @@ def collect_by_util_and_floor(stage, cfg, log=print):
 
     if classify_by_z:
         floor_z_table = _build_floor_z_table(stage)
-        bbox_cache = UsdGeom.BBoxCache(
-            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True
-        )
         log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}")
     else:
         floor_z_table = None
-        bbox_cache = None
         log("  Floor classify mode: parent hierarchy")
 
     for prim in stage.TraverseAll():
@@ -183,7 +181,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             util_paths.append(export_path)
         else:
             if classify_by_z:
-                level_name = _classify_floor_by_z(prim, floor_z_table, bbox_cache)
+                level_name = _classify_floor_by_z(prim, floor_z_table)
             else:
                 level_prim = _level_ancestor(prim)
                 level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
