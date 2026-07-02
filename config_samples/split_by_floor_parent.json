@@ -1,5 +1,5 @@
 {
-    "_comment": "배관류(_util.usd)와 층별 파일({파일명}_{층이름}.usd)로 분리하는 샘플",
+    "_comment": "층별 분리 — 부모 IFCBUILDINGSTOREY 계층 기반 분류 (floor_classify_by_z: false). RVT 변환 계층 구조가 실제 층과 일치하는 경우에 사용.",
     "tasks": [
         {
             "common": {
@@ -32,7 +32,7 @@
                                 "prototype_scope_names": ["Prototypes"],
                                 "subfolder_per_file":    true,
                                 "normalize_level_name":  false,
-                                "floor_classify_by_z":   true
+                                "floor_classify_by_z":   false
                             }
                         }
                     ]
