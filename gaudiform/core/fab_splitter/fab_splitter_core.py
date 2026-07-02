@@ -28,6 +28,7 @@ DEFAULT_CFG = {
     "subfolder_per_file":    True,
     "normalize_level_name":  False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
     "suffix_sep":            "@",     # 파일명 구분자: {basename}@{suffix}.usd
+    "floor_classify_by_z":   True,    # True: bbox Z좌표 기반 층 분류 / False: 부모 계층 기반
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -108,6 +109,16 @@ def _classify_floor_by_z(prim, floor_z_table, bbox_cache):
     return floor_z_table[-1][2]
 
 
+def _level_ancestor(prim):
+    """부모 계층에서 가장 가까운 IFCBUILDINGSTOREY 프림 반환."""
+    current = prim.GetParent()
+    while current and current.GetPath() != Sdf.Path("/"):
+        if _get_attr(current, ATTR_TYPE) == "IFCBUILDINGSTOREY":
+            return current
+        current = current.GetParent()
+    return None
+
+
 def _find_instance_root(prim):
     """instance proxy 프림에서 실제 instance prim(IsInstance=True) 반환."""
     current = prim
@@ -124,22 +135,28 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     """
     Returns:
         util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트
-        floor_dict:    dict[str, list[SdfPath]] — 나머지, bbox Z 기준 층별 분류
+        floor_dict:    dict[str, list[SdfPath]] — 나머지, 층별 분류
         no_level_paths: list[SdfPath] — 층 정보 없는 나머지
     """
-    util_cat_set   = set(cfg.get("util_categories", []))
-    do_normalize   = cfg.get("normalize_level_name", False)
+    util_cat_set    = set(cfg.get("util_categories", []))
+    do_normalize    = cfg.get("normalize_level_name", False)
+    classify_by_z   = cfg.get("floor_classify_by_z", True)
     util_paths: list = []
     floor_dict: dict = {}
     no_level_paths: list = []
     seen: set  = set()
     total = 0
 
-    floor_z_table = _build_floor_z_table(stage)
-    bbox_cache = UsdGeom.BBoxCache(
-        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True
-    )
-    log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}")
+    if classify_by_z:
+        floor_z_table = _build_floor_z_table(stage)
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True
+        )
+        log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}")
+    else:
+        floor_z_table = None
+        bbox_cache = None
+        log("  Floor classify mode: parent hierarchy")
 
     for prim in stage.TraverseAll():
         if Usd.ModelAPI(prim).GetKind() != "component":
@@ -165,7 +182,12 @@ def collect_by_util_and_floor(stage, cfg, log=print):
         if cat in util_cat_set:
             util_paths.append(export_path)
         else:
-            level_name = _classify_floor_by_z(prim, floor_z_table, bbox_cache)
+            if classify_by_z:
+                level_name = _classify_floor_by_z(prim, floor_z_table, bbox_cache)
+            else:
+                level_prim = _level_ancestor(prim)
+                level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
+                level_name = level_name or None
             if level_name:
                 if do_normalize:
                     level_name = _normalize_level_name(level_name)
