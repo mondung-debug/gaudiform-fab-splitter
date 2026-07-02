@@ -57,13 +57,55 @@ def _get_attr(prim, attr_name):
     return None
 
 
-def _level_ancestor(prim):
-    current = prim.GetParent()
-    while current and current.GetPath() != Sdf.Path("/"):
-        if _get_attr(current, ATTR_TYPE) == "IFCBUILDINGSTOREY":
-            return current
-        current = current.GetParent()
-    return None
+def _build_floor_z_table(stage):
+    """IFCBUILDINGSTOREY 프림의 월드 Z 좌표로 층 Z-범위 테이블 구성.
+    Returns:
+        list of (z_min, z_max, level_name) sorted ascending.
+        마지막 층의 z_max = float('inf').
+    """
+    seen_names: dict = {}  # level_name → world_z (첫 등장만)
+    for prim in stage.TraverseAll():
+        if _get_attr(prim, ATTR_TYPE) != "IFCBUILDINGSTOREY":
+            continue
+        level_name = _get_attr(prim, ATTR_LEVEL_NAME) or ""
+        if not level_name or level_name in seen_names:
+            continue
+        try:
+            mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            seen_names[level_name] = mat.ExtractTranslation()[2]
+        except Exception:
+            pass
+
+    if not seen_names:
+        return []
+
+    floors = sorted(seen_names.items(), key=lambda x: x[1])  # (name, z) by z
+    result = []
+    for i, (name, z) in enumerate(floors):
+        z_max = floors[i + 1][1] if i + 1 < len(floors) else float('inf')
+        result.append((z, z_max, name))
+    return result
+
+
+def _classify_floor_by_z(prim, floor_z_table, bbox_cache):
+    """장비 프림의 bbox Z min 기준으로 층 이름 반환. 매칭 안 되면 None."""
+    if not floor_z_table:
+        return None
+    try:
+        bound = bbox_cache.ComputeWorldBound(prim)
+        if bound.GetRange().IsEmpty():
+            return None
+        z = bound.GetRange().GetMin()[2]
+    except Exception:
+        return None
+
+    for z_min, z_max, name in floor_z_table:
+        if z_min <= z < z_max:
+            return name
+    # 범위 밖 → 가장 가까운 층으로 fallback
+    if z < floor_z_table[0][0]:
+        return floor_z_table[0][2]
+    return floor_z_table[-1][2]
 
 
 def _find_instance_root(prim):
@@ -82,7 +124,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     """
     Returns:
         util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트
-        floor_dict:    dict[str, list[SdfPath]] — 나머지, 층별 분류
+        floor_dict:    dict[str, list[SdfPath]] — 나머지, bbox Z 기준 층별 분류
         no_level_paths: list[SdfPath] — 층 정보 없는 나머지
     """
     util_cat_set   = set(cfg.get("util_categories", []))
@@ -92,6 +134,12 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     no_level_paths: list = []
     seen: set  = set()
     total = 0
+
+    floor_z_table = _build_floor_z_table(stage)
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True
+    )
+    log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}")
 
     for prim in stage.TraverseAll():
         if Usd.ModelAPI(prim).GetKind() != "component":
@@ -117,8 +165,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
         if cat in util_cat_set:
             util_paths.append(export_path)
         else:
-            level_prim = _level_ancestor(prim)
-            level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
+            level_name = _classify_floor_by_z(prim, floor_z_table, bbox_cache)
             if level_name:
                 if do_normalize:
                     level_name = _normalize_level_name(level_name)
@@ -345,4 +392,7 @@ def process_stage(
     shutil.copy2(usd_file_path, all_output)
     log(f"  [ALL] 원본 복사 → {all_output}")
 
-    return util_count, floor_count, no_level_count
+    u, f, n = util_count, floor_count, no_level_count
+    del util_paths, floor_dict, no_level_paths
+    gc.collect()
+    return u, f, n
