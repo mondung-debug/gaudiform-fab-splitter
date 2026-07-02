@@ -23,12 +23,13 @@ ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 
 DEFAULT_CFG = {
     "util_categories":       ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+    "equipment_categories":  ["Mechanical Equipment"],   # 층별 분류 대상 카테고리
     "output_ext":            ".usd",
     "prototype_scope_names": ["Prototypes"],
     "subfolder_per_file":    True,
     "normalize_level_name":  False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
     "suffix_sep":            "@",     # 파일명 구분자: {basename}@{suffix}.usd
-    "floor_classify_by_z":   True,    # True: bbox Z좌표 기반 층 분류 / False: 부모 계층 기반
+    "floor_classify_by_z":   True,    # True: prim origin Z 기반 층 분류 / False: 부모 계층 기반
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -136,17 +137,20 @@ def _find_instance_root(prim):
 def collect_by_util_and_floor(stage, cfg, log=print):
     """
     Returns:
-        util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트
-        floor_dict:    dict[str, list[SdfPath]] — 나머지, 층별 분류
-        no_level_paths: list[SdfPath] — 층 정보 없는 나머지
+        util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트 (배관류)
+        floor_dict:    dict[str, list[SdfPath]] — equipment_categories, 층별 분류
+        no_level_paths: list[SdfPath] — equipment_categories이지만 층 미분류
+        other_paths:   list[SdfPath] — util도 equipment도 아닌 나머지 컴포넌트
     """
-    util_cat_set    = set(cfg.get("util_categories", []))
-    do_normalize    = cfg.get("normalize_level_name", False)
-    classify_by_z   = cfg.get("floor_classify_by_z", True)
-    util_paths: list = []
-    floor_dict: dict = {}
+    util_cat_set  = set(cfg.get("util_categories", []))
+    equip_cat_set = set(cfg.get("equipment_categories", ["Mechanical Equipment"]))
+    do_normalize  = cfg.get("normalize_level_name", False)
+    classify_by_z = cfg.get("floor_classify_by_z", True)
+    util_paths: list  = []
+    floor_dict: dict  = {}
     no_level_paths: list = []
-    seen: set  = set()
+    other_paths: list = []
+    seen: set = set()
     total = 0
 
     if classify_by_z:
@@ -179,7 +183,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
         cat = _get_attr(prim, ATTR_CATEGORY)
         if cat in util_cat_set:
             util_paths.append(export_path)
-        else:
+        elif cat in equip_cat_set:
             if classify_by_z:
                 level_name = _classify_floor_by_z(prim, floor_z_table)
             else:
@@ -192,10 +196,13 @@ def collect_by_util_and_floor(stage, cfg, log=print):
                 floor_dict.setdefault(level_name, []).append(export_path)
             else:
                 no_level_paths.append(export_path)
+        else:
+            other_paths.append(export_path)
 
     log(f"  Collection: total={total}, util={len(util_paths)}, "
-        f"floors={sorted(floor_dict.keys())}, no_level={len(no_level_paths)}")
-    return util_paths, floor_dict, no_level_paths
+        f"floors={sorted(floor_dict.keys())}, no_level={len(no_level_paths)}, "
+        f"other={len(other_paths)}")
+    return util_paths, floor_dict, no_level_paths, other_paths
 
 
 # ── Export helpers ─────────────────────────────────────────────────────────────
@@ -360,12 +367,12 @@ def process_stage(
     output_directory: str,
     cfg: dict,
     log=print,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """
-    stage를 배관류(_util)와 층별 파일로 분리해서 output_directory에 저장.
+    stage를 분류해서 output_directory에 저장.
 
     Returns:
-        (util_count, floor_count, no_level_count)
+        (util_count, floor_count, no_level_count, other_count)
     """
     merged = dict(DEFAULT_CFG)
     merged.update(cfg)
@@ -377,11 +384,12 @@ def process_stage(
         output_directory = os.path.join(output_directory, safe_basename)
     os.makedirs(output_directory, exist_ok=True)
 
-    util_paths, floor_dict, no_level_paths = collect_by_util_and_floor(stage, cfg, log=log)
+    util_paths, floor_dict, no_level_paths, other_paths = collect_by_util_and_floor(stage, cfg, log=log)
 
     util_count     = 0
     floor_count    = 0
     no_level_count = 0
+    other_count    = 0
 
     sep = cfg.get("suffix_sep", "@")
 
@@ -400,19 +408,26 @@ def process_stage(
         log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
         floor_count += 1
 
-    # 층 정보 없는 나머지 → {파일명}@no_level.usd
+    # 층 정보 없는 equipment → {파일명}@no_level.usd
     if no_level_paths:
         no_level_output = os.path.join(output_directory, f"{safe_basename}{sep}no_level{cfg['output_ext']}")
         export_paths(stage, no_level_paths, no_level_output, cfg, log=log)
         log(f"  [NO_LEVEL] {len(no_level_paths)} prims → {no_level_output}")
         no_level_count = 1
 
-    # 원본 USD → {파일명}@All.usd 로 복사
+    # 나머지 (util도 equipment도 아닌 component) → {파일명}@other.usd
+    if other_paths:
+        other_output = os.path.join(output_directory, f"{safe_basename}{sep}other{cfg['output_ext']}")
+        export_paths(stage, other_paths, other_output, cfg, log=log)
+        log(f"  [OTHER] {len(other_paths)} prims → {other_output}")
+        other_count = 1
+
+    # 원본 USD → {파일명}@all.usd 로 복사
     all_output = os.path.join(output_directory, f"{safe_basename}{sep}all{cfg['output_ext']}")
     shutil.copy2(usd_file_path, all_output)
     log(f"  [ALL] 원본 복사 → {all_output}")
 
-    u, f, n = util_count, floor_count, no_level_count
-    del util_paths, floor_dict, no_level_paths
+    u, f, n, o = util_count, floor_count, no_level_count, other_count
+    del util_paths, floor_dict, no_level_paths, other_paths
     gc.collect()
-    return u, f, n
+    return u, f, n, o
