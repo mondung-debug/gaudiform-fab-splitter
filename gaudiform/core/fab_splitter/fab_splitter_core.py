@@ -95,11 +95,19 @@ def _get_classify_z(prim, bbox_cache=None) -> float | None:
     """층 분류에 사용할 Z값 반환.
 
     bbox_cache 가 주어지면 bbox Z min(장비 바닥)을 우선 사용.
+    instance proxy 프림은 prototype 로컬 공간으로 계산되므로
+    instance root 프림으로 bbox를 계산한다.
     bbox가 비어있거나 cache가 없으면 prim origin world Z로 fallback.
     """
     if bbox_cache is not None:
+        # instance proxy의 bbox는 prototype 로컬 공간 → instance root로 계산
+        bbox_target = prim
+        if prim.IsInstanceProxy():
+            inst_root = _find_instance_root(prim)
+            if inst_root is not None:
+                bbox_target = inst_root
         try:
-            bound = bbox_cache.ComputeWorldBound(prim)
+            bound = bbox_cache.ComputeWorldBound(bbox_target)
             if not bound.GetRange().IsEmpty():
                 return bound.GetRange().GetMin()[2]
         except Exception:
