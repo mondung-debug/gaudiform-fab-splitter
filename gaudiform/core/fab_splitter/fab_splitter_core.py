@@ -455,14 +455,21 @@ def process_stage(
 
     # debug_log 활성화 시 output_directory에 _fab_split_debug.log 저장
     _debug_file = None
+    _debug_path = None
     if cfg.get("debug_log", False):
-        _debug_path = os.path.join(output_directory, f"{safe_basename}_fab_split_debug.log")
-        _debug_file = open(_debug_path, "w", encoding="utf-8")  # noqa: WPS515
-        _orig_log = log
-        def log(msg: str) -> None:  # type: ignore[misc]
-            _orig_log(msg)
-            _debug_file.write(msg + "\n")
-            _debug_file.flush()
+        try:
+            _debug_path = os.path.join(output_directory, f"{safe_basename}_fab_split_debug.log")
+            _debug_file = open(_debug_path, "w", encoding="utf-8")  # noqa: WPS515
+            _orig_log = log
+            def log(msg: str) -> None:  # type: ignore[misc]
+                _orig_log(msg)
+                try:
+                    _debug_file.write(msg + "\n")
+                    _debug_file.flush()
+                except Exception:
+                    pass
+        except Exception as e:
+            log(f"  [DEBUG_LOG] 파일 생성 실패: {e}")
 
     util_paths, floor_dict, no_level_paths, other_paths = collect_by_util_and_floor(stage, cfg, log=log)
 
@@ -507,9 +514,9 @@ def process_stage(
     shutil.copy2(usd_file_path, all_output)
     log(f"  [ALL] 원본 복사 → {all_output}")
 
-    if _debug_file:
+    if _debug_file and _debug_path:
+        log(f"  [DEBUG_LOG] {_debug_path}")  # 닫기 전에 기록
         _debug_file.close()
-        log(f"  [DEBUG_LOG] {_debug_path}")
 
     u, f, n, o = util_count, floor_count, no_level_count, other_count
     del util_paths, floor_dict, no_level_paths, other_paths
