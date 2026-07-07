@@ -32,6 +32,7 @@ DEFAULT_CFG = {
     "floor_classify_by_z":        True,    # True: Z 기반 층 분류 / False: 부모 계층 기반
     "floor_z_use_bbox_min":       False,  # True: bbox Z min(장비 바닥) 기준 / False: prim origin Z 기준
     "floor_z_boundary_tolerance": 0.01,  # Z기반 분류 시 층 Z origin과의 snap 허용 오차(m)
+    "debug_log":                  False,  # True: {파일명}_fab_split_debug.log 생성
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -452,6 +453,17 @@ def process_stage(
         output_directory = os.path.join(output_directory, safe_basename)
     os.makedirs(output_directory, exist_ok=True)
 
+    # debug_log 활성화 시 output_directory에 _fab_split_debug.log 저장
+    _debug_file = None
+    if cfg.get("debug_log", False):
+        _debug_path = os.path.join(output_directory, f"{safe_basename}_fab_split_debug.log")
+        _debug_file = open(_debug_path, "w", encoding="utf-8")  # noqa: WPS515
+        _orig_log = log
+        def log(msg: str) -> None:  # type: ignore[misc]
+            _orig_log(msg)
+            _debug_file.write(msg + "\n")
+            _debug_file.flush()
+
     util_paths, floor_dict, no_level_paths, other_paths = collect_by_util_and_floor(stage, cfg, log=log)
 
     util_count     = 0
@@ -494,6 +506,10 @@ def process_stage(
     all_output = os.path.join(output_directory, f"{safe_basename}{sep}all{cfg['output_ext']}")
     shutil.copy2(usd_file_path, all_output)
     log(f"  [ALL] 원본 복사 → {all_output}")
+
+    if _debug_file:
+        _debug_file.close()
+        log(f"  [DEBUG_LOG] {_debug_path}")
 
     u, f, n, o = util_count, floor_count, no_level_count, other_count
     del util_paths, floor_dict, no_level_paths, other_paths
