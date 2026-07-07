@@ -95,48 +95,38 @@ def _build_floor_z_table(stage, log=None):
     return result
 
 
-def _get_classify_z(prim, bbox_cache=None, log=None) -> float | None:
-    """층 분류에 사용할 Z값 반환.
-
-    bbox_cache 가 주어지면 bbox Z min(장비 바닥)을 우선 사용.
-    instance proxy 프림은 prototype 로컬 공간으로 계산되므로
-    instance root 프림으로 bbox를 계산한다.
-    bbox가 비어있거나 cache가 없으면 prim origin world Z로 fallback.
-    """
-    if bbox_cache is not None:
-        # instance proxy의 경우 instance root로 대상 변경
-        bbox_target = prim
-        if prim.IsInstanceProxy():
-            inst_root = _find_instance_root(prim)
-            if inst_root is not None:
-                bbox_target = inst_root
-
-        try:
-            rng = bbox_cache.ComputeWorldBound(bbox_target).GetRange()
-            if not rng.IsEmpty():
-                w_z_min = rng.GetMin()[2]
-                mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                prim_world_z = mat.ExtractTranslation()[2]
-                # ComputeWorldBound가 prototype 로컬 공간을 반환하는 경우가 있음.
-                # w_z_min이 prim origin Z와 크게 다르면 prototype 로컬로 간주하고 합산.
-                if abs(w_z_min - prim_world_z) < abs(w_z_min):
-                    result_z = w_z_min  # 이미 world 공간
-                else:
-                    result_z = prim_world_z + w_z_min  # prototype 로컬 + prim origin Z
-                if log:
-                    log(f"  [BBOX_Z] {bbox_target.GetPath()} w_z_min={w_z_min:.4f}"
-                        f" prim_z={prim_world_z:.4f} → classify_z={result_z:.4f}")
-                return result_z
-        except Exception as e:
-            if log:
-                log(f"  [BBOX_Z] {prim.GetPath()} error: {e}")
-
+def _get_prim_origin_z(prim) -> float | None:
+    """prim의 world Z origin 반환."""
     try:
         mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        z = mat.ExtractTranslation()[2]
-        if log:
-            log(f"  [ORIGIN_Z] {prim.GetPath()} z={z:.4f}")
-        return z
+        return mat.ExtractTranslation()[2]
+    except Exception:
+        return None
+
+
+def _get_bbox_world_range(prim, bbox_cache) -> tuple[float, float] | None:
+    """bbox world Z (min, max) 반환.
+
+    ComputeWorldBound가 prototype 로컬 공간을 반환하는 경우
+    prim origin world Z를 합산해 world 공간으로 변환한다.
+    """
+    bbox_target = prim
+    if prim.IsInstanceProxy():
+        inst_root = _find_instance_root(prim)
+        if inst_root is not None:
+            bbox_target = inst_root
+    try:
+        rng = bbox_cache.ComputeWorldBound(bbox_target).GetRange()
+        if rng.IsEmpty():
+            return None
+        w_z_min = float(rng.GetMin()[2])
+        w_z_max = float(rng.GetMax()[2])
+        prim_z = _get_prim_origin_z(prim) or 0.0
+        # prototype 로컬 감지: w_z_min과 prim_z 차이가 w_z_min 자체보다 크면 로컬 공간
+        if abs(w_z_min - prim_z) >= abs(w_z_min):
+            w_z_min += prim_z
+            w_z_max += prim_z
+        return (w_z_min, w_z_max)
     except Exception:
         return None
 
@@ -144,17 +134,37 @@ def _get_classify_z(prim, bbox_cache=None, log=None) -> float | None:
 def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_cache=None, log=None):
     """장비 프림의 Z 기준으로 층 이름 반환. 매칭 안 되면 None.
 
-    bbox_cache 가 있으면 bbox Z min(장비 바닥), 없으면 prim origin world Z 사용.
-    boundary_tol > 0 이면 층 Z origin에서 tol(m) 이내인 경우 해당 층으로 snap.
+    bbox_cache 가 있으면 bbox world Z 범위와 각 층 범위의 겹치는 길이가 가장 큰 층 반환.
+    bbox가 없으면 prim origin world Z로 범위 기반 분류 (boundary_tol 적용).
     """
     if not floor_z_table:
         return None
 
-    z = _get_classify_z(prim, bbox_cache, log=log)
+    # ── bbox 겹침 기반 분류 ──────────────────────────────────────────────────
+    if bbox_cache is not None:
+        bbox_range = _get_bbox_world_range(prim, bbox_cache)
+        if bbox_range is not None:
+            bz_min, bz_max = bbox_range
+            if log:
+                log(f"  [BBOX_Z] {prim.GetPath()} world_z=({bz_min:.4f},{bz_max:.4f})")
+            best_name: str | None = None
+            best_overlap = -1.0
+            for f_min, f_max, name in floor_z_table:
+                overlap = max(0.0, min(bz_max, f_max) - max(bz_min, f_min))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_name = name
+            if log and best_name:
+                log(f"  [FLOOR] → {best_name!r} (overlap={best_overlap:.4f}m)")
+            return best_name
+
+    # ── prim origin Z 기반 분류 (fallback) ─────────────────────────────────
+    z = _get_prim_origin_z(prim)
     if z is None:
         return None
+    if log:
+        log(f"  [ORIGIN_Z] {prim.GetPath()} z={z:.4f}")
 
-    # 층 Z origin에 가장 가까운 층으로 snap (tol 이내일 때만)
     if boundary_tol > 0:
         candidates = [
             (abs(z - t[0]), t[2])
@@ -164,12 +174,9 @@ def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_ca
         if candidates:
             return min(candidates, key=lambda x: x[0])[1]
 
-    # 일반 범위 기반 분류
     for z_min, z_max, name in floor_z_table:
         if z_min <= z < z_max:
             return name
-
-    # 범위 밖 → 가장 가까운 층으로 fallback
     if z < floor_z_table[0][0]:
         return floor_z_table[0][2]
     return floor_z_table[-1][2]
