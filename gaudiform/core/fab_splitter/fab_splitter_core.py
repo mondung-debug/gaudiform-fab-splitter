@@ -29,8 +29,9 @@ DEFAULT_CFG = {
     "subfolder_per_file":         True,
     "normalize_level_name":       False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
     "suffix_sep":                 "@",     # 파일명 구분자: {basename}@{suffix}.usd
-    "floor_classify_by_z":        True,    # True: prim origin Z 기반 층 분류 / False: 부모 계층 기반
-    "floor_z_boundary_tolerance": 0.01,   # Z기반 분류 시 층 경계 허용 오차(m). 경계 이내면 부모계층 우선
+    "floor_classify_by_z":        True,    # True: Z 기반 층 분류 / False: 부모 계층 기반
+    "floor_z_use_bbox_min":       False,  # True: bbox Z min(장비 바닥) 기준 / False: prim origin Z 기준
+    "floor_z_boundary_tolerance": 0.01,  # Z기반 분류 시 층 Z origin과의 snap 허용 오차(m)
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -90,19 +91,37 @@ def _build_floor_z_table(stage):
     return result
 
 
-def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0):
-    """장비 프림의 월드 origin Z 기준으로 층 이름 반환. 매칭 안 되면 None.
+def _get_classify_z(prim, bbox_cache=None) -> float | None:
+    """층 분류에 사용할 Z값 반환.
 
-    boundary_tol > 0 이면 각 층 Z origin에서 tol(m) 이내인 층으로 snap.
-    부동소수점 오차 보정 및 층 Z와 근접한 장비를 해당 층으로 분류.
-    snap 후보가 없으면 일반 범위 기반 분류로 fallback.
+    bbox_cache 가 주어지면 bbox Z min(장비 바닥)을 우선 사용.
+    bbox가 비어있거나 cache가 없으면 prim origin world Z로 fallback.
+    """
+    if bbox_cache is not None:
+        try:
+            bound = bbox_cache.ComputeWorldBound(prim)
+            if not bound.GetRange().IsEmpty():
+                return bound.GetRange().GetMin()[2]
+        except Exception:
+            pass
+    try:
+        mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        return mat.ExtractTranslation()[2]
+    except Exception:
+        return None
+
+
+def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_cache=None):
+    """장비 프림의 Z 기준으로 층 이름 반환. 매칭 안 되면 None.
+
+    bbox_cache 가 있으면 bbox Z min(장비 바닥), 없으면 prim origin world Z 사용.
+    boundary_tol > 0 이면 층 Z origin에서 tol(m) 이내인 경우 해당 층으로 snap.
     """
     if not floor_z_table:
         return None
-    try:
-        mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        z = mat.ExtractTranslation()[2]
-    except Exception:
+
+    z = _get_classify_z(prim, bbox_cache)
+    if z is None:
         return None
 
     # 층 Z origin에 가장 가까운 층으로 snap (tol 이내일 때만)
@@ -167,14 +186,25 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     seen: set = set()
     total = 0
 
-    boundary_tol = float(cfg.get("floor_z_boundary_tolerance", 0.0))
+    boundary_tol  = float(cfg.get("floor_z_boundary_tolerance", 0.0))
+    use_bbox_min  = cfg.get("floor_z_use_bbox_min", False)
 
     if classify_by_z:
         floor_z_table = _build_floor_z_table(stage)
+        mode_desc = "bbox_min" if use_bbox_min else "origin"
         log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}"
-            + (f" (boundary_tol={boundary_tol}m)" if boundary_tol > 0 else ""))
+            + f" [z_mode={mode_desc}"
+            + (f", boundary_tol={boundary_tol}m" if boundary_tol > 0 else "")
+            + "]")
+        if use_bbox_min:
+            bbox_cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(), ["default", "render"], useExtentsHint=False
+            )
+        else:
+            bbox_cache = None
     else:
         floor_z_table = None
+        bbox_cache    = None
         log("  Floor classify mode: parent hierarchy")
 
     for prim in stage.TraverseAll():
@@ -202,7 +232,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             util_paths.append(export_path)
         elif cat in equip_cat_set:
             if classify_by_z:
-                level_name = _classify_floor_by_z(prim, floor_z_table, boundary_tol=boundary_tol)
+                level_name = _classify_floor_by_z(prim, floor_z_table, boundary_tol=boundary_tol, bbox_cache=bbox_cache)
             else:
                 level_prim = _level_ancestor(prim)
                 level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""

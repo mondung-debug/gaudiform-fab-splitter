@@ -33,6 +33,7 @@
                                 "subfolder_per_file":         true,
                                 "normalize_level_name":       false,
                                 "floor_classify_by_z":        true,
+                                "floor_z_use_bbox_min":       false,
                                 "floor_z_boundary_tolerance": 0.01
                             }
                         }
