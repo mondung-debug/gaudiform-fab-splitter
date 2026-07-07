@@ -61,7 +61,7 @@ def _get_attr(prim, attr_name):
     return None
 
 
-def _build_floor_z_table(stage):
+def _build_floor_z_table(stage, log=None):
     """IFCBUILDINGSTOREY 프림의 월드 Z 좌표로 층 Z-범위 테이블 구성.
     Returns:
         list of (z_min, z_max, level_name) sorted ascending.
@@ -84,9 +84,9 @@ def _build_floor_z_table(stage):
         return []
 
     floors = sorted(seen_names.items(), key=lambda x: x[1])  # (name, z) by z
-    # DEBUG: 실제 검출된 floor Z 출력
-    for name, z in floors:
-        print(f"  [FLOOR_Z_DEBUG] {name!r}: world_z={z:.6f}")
+    if log:
+        for name, z in floors:
+            log(f"  [FLOOR_Z] {name!r}: world_z={z:.4f}")
     result = []
     for i, (name, z) in enumerate(floors):
         z_max = floors[i + 1][1] if i + 1 < len(floors) else float('inf')
@@ -94,7 +94,7 @@ def _build_floor_z_table(stage):
     return result
 
 
-def _get_classify_z(prim, bbox_cache=None) -> float | None:
+def _get_classify_z(prim, bbox_cache=None, log=None) -> float | None:
     """층 분류에 사용할 Z값 반환.
 
     bbox_cache 가 주어지면 bbox Z min(장비 바닥)을 우선 사용.
@@ -112,23 +112,27 @@ def _get_classify_z(prim, bbox_cache=None) -> float | None:
         try:
             bound = bbox_cache.ComputeWorldBound(bbox_target)
             rng = bound.GetRange()
-            # DEBUG
-            print(f"  [BBOX_DEBUG] {bbox_target.GetPath()} bbox_empty={rng.IsEmpty()}"
-                  + ("" if rng.IsEmpty() else f" z_min={rng.GetMin()[2]:.6f} z_max={rng.GetMax()[2]:.6f}"))
+            if log:
+                if rng.IsEmpty():
+                    log(f"  [BBOX_Z] {bbox_target.GetPath()} empty")
+                else:
+                    log(f"  [BBOX_Z] {bbox_target.GetPath()} z_min={rng.GetMin()[2]:.4f} z_max={rng.GetMax()[2]:.4f}")
             if not rng.IsEmpty():
                 return rng.GetMin()[2]
         except Exception as e:
-            print(f"  [BBOX_DEBUG] {prim.GetPath()} bbox error: {e}")
+            if log:
+                log(f"  [BBOX_Z] {prim.GetPath()} error: {e}")
     try:
         mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         z = mat.ExtractTranslation()[2]
-        print(f"  [ORIGIN_Z_DEBUG] {prim.GetPath()} origin_z={z:.6f}")
+        if log:
+            log(f"  [ORIGIN_Z] {prim.GetPath()} z={z:.4f}")
         return z
     except Exception:
         return None
 
 
-def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_cache=None):
+def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_cache=None, log=None):
     """장비 프림의 Z 기준으로 층 이름 반환. 매칭 안 되면 None.
 
     bbox_cache 가 있으면 bbox Z min(장비 바닥), 없으면 prim origin world Z 사용.
@@ -137,7 +141,7 @@ def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0, bbox_ca
     if not floor_z_table:
         return None
 
-    z = _get_classify_z(prim, bbox_cache)
+    z = _get_classify_z(prim, bbox_cache, log=log)
     if z is None:
         return None
 
@@ -207,7 +211,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     use_bbox_min  = cfg.get("floor_z_use_bbox_min", False)
 
     if classify_by_z:
-        floor_z_table = _build_floor_z_table(stage)
+        floor_z_table = _build_floor_z_table(stage, log=log)
         mode_desc = "bbox_min" if use_bbox_min else "origin"
         log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}"
             + f" [z_mode={mode_desc}"
@@ -249,7 +253,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             util_paths.append(export_path)
         elif cat in equip_cat_set:
             if classify_by_z:
-                level_name = _classify_floor_by_z(prim, floor_z_table, boundary_tol=boundary_tol, bbox_cache=bbox_cache)
+                level_name = _classify_floor_by_z(prim, floor_z_table, boundary_tol=boundary_tol, bbox_cache=bbox_cache, log=log)
             else:
                 level_prim = _level_ancestor(prim)
                 level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
