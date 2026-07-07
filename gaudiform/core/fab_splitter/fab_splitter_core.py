@@ -93,8 +93,9 @@ def _build_floor_z_table(stage):
 def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0):
     """장비 프림의 월드 origin Z 기준으로 층 이름 반환. 매칭 안 되면 None.
 
-    boundary_tol > 0 이면 층 경계에서 tol(m) 이내인 경우 부모계층으로 fallback.
-    경계에 걸친 장비(예: 6층 parent인데 world Z가 정확히 7층 경계)를 올바르게 분류하기 위함.
+    boundary_tol > 0 이면 각 층 Z origin에서 tol(m) 이내인 층으로 snap.
+    부동소수점 오차 보정 및 층 Z와 근접한 장비를 해당 층으로 분류.
+    snap 후보가 없으면 일반 범위 기반 분류로 fallback.
     """
     if not floor_z_table:
         return None
@@ -104,33 +105,23 @@ def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0):
     except Exception:
         return None
 
-    def _parent_name():
-        level_prim = _level_ancestor(prim)
-        if level_prim:
-            return _get_attr(level_prim, ATTR_LEVEL_NAME) or None
-        return None
+    # 층 Z origin에 가장 가까운 층으로 snap (tol 이내일 때만)
+    if boundary_tol > 0:
+        candidates = [
+            (abs(z - t[0]), t[2])
+            for t in floor_z_table
+            if abs(z - t[0]) <= boundary_tol
+        ]
+        if candidates:
+            return min(candidates, key=lambda x: x[0])[1]
 
+    # 일반 범위 기반 분류
     for z_min, z_max, name in floor_z_table:
         if z_min <= z < z_max:
-            if boundary_tol > 0:
-                # 하한 경계 근처: 장비 Z가 이 층 시작점에 너무 가까우면 부모계층 우선
-                if (z - z_min) < boundary_tol:
-                    p = _parent_name()
-                    if p:
-                        return p
-                # 상한 경계 근처: 장비 Z가 다음 층 경계에 너무 가까우면 부모계층 우선
-                if z_max != float('inf') and (z_max - z) < boundary_tol:
-                    p = _parent_name()
-                    if p:
-                        return p
             return name
 
     # 범위 밖 → 가장 가까운 층으로 fallback
     if z < floor_z_table[0][0]:
-        if boundary_tol > 0 and (floor_z_table[0][0] - z) < boundary_tol:
-            p = _parent_name()
-            if p:
-                return p
         return floor_z_table[0][2]
     return floor_z_table[-1][2]
 
