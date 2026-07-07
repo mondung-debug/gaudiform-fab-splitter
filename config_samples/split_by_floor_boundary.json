@@ -1,5 +1,5 @@
 {
-    "_comment": "배관류(@util.usd)와 층별 파일({파일명}@{층이름}.usd)로 분리하는 샘플. Z기반 층 분류 + 경계 보정",
+    "_comment": "층별 분리 — Z기반 분류 + 경계 보정 (floor_z_boundary_tolerance). 장비 Z가 층 경계에 걸칠 때 부모계층으로 fallback하여 오분류를 방지함. RVT 오배치와 경계 걸침이 혼재하는 경우에 사용.",
     "tasks": [
         {
             "common": {
@@ -33,7 +33,7 @@
                                 "subfolder_per_file":         true,
                                 "normalize_level_name":       false,
                                 "floor_classify_by_z":        true,
-                                "floor_z_boundary_tolerance": 0.01
+                                "floor_z_boundary_tolerance": 0.5
                             }
                         }
                     ]

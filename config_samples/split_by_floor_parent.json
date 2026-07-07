@@ -1,5 +1,5 @@
 {
-    "_comment": "층별 분리 — 부모 IFCBUILDINGSTOREY 계층 기반 분류 (floor_classify_by_z: false). RVT 변환 계층 구조가 실제 층과 일치하는 경우에 사용.",
+    "_comment": "층별 분리 — 부모 IFCBUILDINGSTOREY 계층 기반 분류 (floor_classify_by_z: false). RVT 변환 계층 구조가 실제 층과 일치할 때 사용. 장비가 층 경계를 넘는 높이여도 Revit 설계 배정 기준으로 분류됨.",
     "tasks": [
         {
             "common": {

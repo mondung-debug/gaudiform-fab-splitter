@@ -22,14 +22,15 @@ ATTR_TYPE       = "omni:hoops:metadata:TYPE"
 # ── Default config ─────────────────────────────────────────────────────────────
 
 DEFAULT_CFG = {
-    "util_categories":       ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
-    "equipment_categories":  ["Mechanical Equipment"],   # 층별 분류 대상 카테고리
-    "output_ext":            ".usd",
-    "prototype_scope_names": ["Prototypes"],
-    "subfolder_per_file":    True,
-    "normalize_level_name":  False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
-    "suffix_sep":            "@",     # 파일명 구분자: {basename}@{suffix}.usd
-    "floor_classify_by_z":   True,    # True: prim origin Z 기반 층 분류 / False: 부모 계층 기반
+    "util_categories":            ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"],
+    "equipment_categories":       ["Mechanical Equipment"],   # 층별 분류 대상 카테고리
+    "output_ext":                 ".usd",
+    "prototype_scope_names":      ["Prototypes"],
+    "subfolder_per_file":         True,
+    "normalize_level_name":       False,   # True 시 층 이름 정규화 (예: "9th FL" → "9F")
+    "suffix_sep":                 "@",     # 파일명 구분자: {basename}@{suffix}.usd
+    "floor_classify_by_z":        True,    # True: prim origin Z 기반 층 분류 / False: 부모 계층 기반
+    "floor_z_boundary_tolerance": 0.01,   # Z기반 분류 시 층 경계 허용 오차(m). 경계 이내면 부모계층 우선
 }
 
 _UNSAFE_FILENAME_RE  = re.compile(r'[\\/:*?"<>|₩]')
@@ -89,11 +90,11 @@ def _build_floor_z_table(stage):
     return result
 
 
-def _classify_floor_by_z(prim, floor_z_table, _bbox_cache=None):
+def _classify_floor_by_z(prim, floor_z_table, boundary_tol: float = 0.0):
     """장비 프림의 월드 origin Z 기준으로 층 이름 반환. 매칭 안 되면 None.
 
-    BBoxCache는 extent hint 없는 prim에서 empty를 반환할 수 있어 사용하지 않음.
-    대신 prim origin의 world Z (ComputeLocalToWorldTransform)를 사용.
+    boundary_tol > 0 이면 층 경계에서 tol(m) 이내인 경우 부모계층으로 fallback.
+    경계에 걸친 장비(예: 6층 parent인데 world Z가 정확히 7층 경계)를 올바르게 분류하기 위함.
     """
     if not floor_z_table:
         return None
@@ -103,11 +104,33 @@ def _classify_floor_by_z(prim, floor_z_table, _bbox_cache=None):
     except Exception:
         return None
 
+    def _parent_name():
+        level_prim = _level_ancestor(prim)
+        if level_prim:
+            return _get_attr(level_prim, ATTR_LEVEL_NAME) or None
+        return None
+
     for z_min, z_max, name in floor_z_table:
         if z_min <= z < z_max:
+            if boundary_tol > 0:
+                # 하한 경계 근처: 장비 Z가 이 층 시작점에 너무 가까우면 부모계층 우선
+                if (z - z_min) < boundary_tol:
+                    p = _parent_name()
+                    if p:
+                        return p
+                # 상한 경계 근처: 장비 Z가 다음 층 경계에 너무 가까우면 부모계층 우선
+                if z_max != float('inf') and (z_max - z) < boundary_tol:
+                    p = _parent_name()
+                    if p:
+                        return p
             return name
+
     # 범위 밖 → 가장 가까운 층으로 fallback
     if z < floor_z_table[0][0]:
+        if boundary_tol > 0 and (floor_z_table[0][0] - z) < boundary_tol:
+            p = _parent_name()
+            if p:
+                return p
         return floor_z_table[0][2]
     return floor_z_table[-1][2]
 
@@ -153,9 +176,12 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     seen: set = set()
     total = 0
 
+    boundary_tol = float(cfg.get("floor_z_boundary_tolerance", 0.0))
+
     if classify_by_z:
         floor_z_table = _build_floor_z_table(stage)
-        log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}")
+        log(f"  Floors detected (Z-order): {[t[2] for t in floor_z_table]}"
+            + (f" (boundary_tol={boundary_tol}m)" if boundary_tol > 0 else ""))
     else:
         floor_z_table = None
         log("  Floor classify mode: parent hierarchy")
@@ -185,7 +211,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             util_paths.append(export_path)
         elif cat in equip_cat_set:
             if classify_by_z:
-                level_name = _classify_floor_by_z(prim, floor_z_table)
+                level_name = _classify_floor_by_z(prim, floor_z_table, boundary_tol=boundary_tol)
             else:
                 level_prim = _level_ancestor(prim)
                 level_name = (_get_attr(level_prim, ATTR_LEVEL_NAME) or "") if level_prim else ""
