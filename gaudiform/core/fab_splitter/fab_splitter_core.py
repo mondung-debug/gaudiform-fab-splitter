@@ -106,27 +106,59 @@ def _get_classify_z(prim, bbox_cache=None, log=None) -> float | None:
     if bbox_cache is not None:
         # instance proxy의 경우 instance root로 대상 변경
         bbox_target = prim
-        if prim.IsInstanceProxy():
+        is_proxy = prim.IsInstanceProxy()
+        if is_proxy:
             inst_root = _find_instance_root(prim)
             if inst_root is not None:
                 bbox_target = inst_root
 
+        if log:
+            log(f"  [BBOX_DBG] prim={prim.GetPath()} proxy={is_proxy}"
+                f" is_instance={prim.IsInstance()}"
+                f" target={bbox_target.GetPath()} target_is_instance={bbox_target.IsInstance()}")
+
         try:
-            # USD instance prim에서 ComputeWorldBound()가 prototype 로컬 공간으로
-            # 반환하는 경우가 있으므로, 로컬 bbox Z min + prim origin world Z로 계산
+            # ComputeWorldBound / ComputeLocalBound 두 방법 모두 시도
+            world_bound = bbox_cache.ComputeWorldBound(bbox_target)
             local_bound = bbox_cache.ComputeLocalBound(bbox_target)
-            rng = local_bound.GetRange()
-            if not rng.IsEmpty():
-                local_z_min = rng.GetMin()[2]
-                mat = UsdGeom.Xformable(bbox_target).ComputeLocalToWorldTransform(
-                    Usd.TimeCode.Default()
-                )
-                world_z_offset = mat.ExtractTranslation()[2]
-                world_z_min = local_z_min + world_z_offset
-                if log:
-                    log(f"  [BBOX_Z] {bbox_target.GetPath()} local_z_min={local_z_min:.4f}"
-                        f" + world_offset={world_z_offset:.4f} → world_z_min={world_z_min:.4f}")
-                return world_z_min
+            w_rng = world_bound.GetRange()
+            l_rng = local_bound.GetRange()
+            if log:
+                if not w_rng.IsEmpty():
+                    log(f"  [BBOX_DBG] WorldBound  z=({w_rng.GetMin()[2]:.4f},{w_rng.GetMax()[2]:.4f})")
+                else:
+                    log(f"  [BBOX_DBG] WorldBound  empty")
+                if not l_rng.IsEmpty():
+                    log(f"  [BBOX_DBG] LocalBound  z=({l_rng.GetMin()[2]:.4f},{l_rng.GetMax()[2]:.4f})")
+                else:
+                    log(f"  [BBOX_DBG] LocalBound  empty")
+
+            # prim origin world Z (target 기준)
+            t_mat = UsdGeom.Xformable(bbox_target).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            target_world_z = t_mat.ExtractTranslation()[2]
+            # 원본 prim origin world Z 도 함께 확인
+            p_mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            prim_world_z = p_mat.ExtractTranslation()[2]
+            if log:
+                log(f"  [BBOX_DBG] target_origin_z={target_world_z:.4f} prim_origin_z={prim_world_z:.4f}")
+
+            # WorldBound Z min이 실제 world 좌표처럼 보이면(prim_origin_z와 유사) 그대로 사용
+            # 아니면(prototype 로컬) prim origin Z + world bbox Z min 합산
+            if not w_rng.IsEmpty():
+                w_z_min = w_rng.GetMin()[2]
+                # WorldBound가 이미 world 공간이면 prim_origin_z와 차이가 작음
+                if abs(w_z_min - prim_world_z) < abs(w_z_min):
+                    # WorldBound가 world 공간 → 그대로 사용
+                    result_z = w_z_min
+                    if log:
+                        log(f"  [BBOX_Z] {bbox_target.GetPath()} world_z_min={result_z:.4f} (WorldBound direct)")
+                else:
+                    # WorldBound가 prototype 로컬 → prim origin z 합산
+                    result_z = prim_world_z + w_z_min
+                    if log:
+                        log(f"  [BBOX_Z] {bbox_target.GetPath()} prim_z={prim_world_z:.4f}"
+                            f" + proto_z_min={w_z_min:.4f} → world_z_min={result_z:.4f}")
+                return result_z
         except Exception as e:
             if log:
                 log(f"  [BBOX_Z] {prim.GetPath()} error: {e}")
