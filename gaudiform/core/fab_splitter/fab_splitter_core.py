@@ -104,25 +104,33 @@ def _get_classify_z(prim, bbox_cache=None, log=None) -> float | None:
     bbox가 비어있거나 cache가 없으면 prim origin world Z로 fallback.
     """
     if bbox_cache is not None:
-        # instance proxy의 bbox는 prototype 로컬 공간 → instance root로 계산
+        # instance proxy의 경우 instance root로 대상 변경
         bbox_target = prim
         if prim.IsInstanceProxy():
             inst_root = _find_instance_root(prim)
             if inst_root is not None:
                 bbox_target = inst_root
+
         try:
-            bound = bbox_cache.ComputeWorldBound(bbox_target)
-            rng = bound.GetRange()
-            if log:
-                if rng.IsEmpty():
-                    log(f"  [BBOX_Z] {bbox_target.GetPath()} empty")
-                else:
-                    log(f"  [BBOX_Z] {bbox_target.GetPath()} z_min={rng.GetMin()[2]:.4f} z_max={rng.GetMax()[2]:.4f}")
+            # USD instance prim에서 ComputeWorldBound()가 prototype 로컬 공간으로
+            # 반환하는 경우가 있으므로, 로컬 bbox Z min + prim origin world Z로 계산
+            local_bound = bbox_cache.ComputeLocalBound(bbox_target)
+            rng = local_bound.GetRange()
             if not rng.IsEmpty():
-                return rng.GetMin()[2]
+                local_z_min = rng.GetMin()[2]
+                mat = UsdGeom.Xformable(bbox_target).ComputeLocalToWorldTransform(
+                    Usd.TimeCode.Default()
+                )
+                world_z_offset = mat.ExtractTranslation()[2]
+                world_z_min = local_z_min + world_z_offset
+                if log:
+                    log(f"  [BBOX_Z] {bbox_target.GetPath()} local_z_min={local_z_min:.4f}"
+                        f" + world_offset={world_z_offset:.4f} → world_z_min={world_z_min:.4f}")
+                return world_z_min
         except Exception as e:
             if log:
                 log(f"  [BBOX_Z] {prim.GetPath()} error: {e}")
+
     try:
         mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         z = mat.ExtractTranslation()[2]
