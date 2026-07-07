@@ -84,6 +84,9 @@ def _build_floor_z_table(stage):
         return []
 
     floors = sorted(seen_names.items(), key=lambda x: x[1])  # (name, z) by z
+    # DEBUG: 실제 검출된 floor Z 출력
+    for name, z in floors:
+        print(f"  [FLOOR_Z_DEBUG] {name!r}: world_z={z:.6f}")
     result = []
     for i, (name, z) in enumerate(floors):
         z_max = floors[i + 1][1] if i + 1 < len(floors) else float('inf')
@@ -108,13 +111,19 @@ def _get_classify_z(prim, bbox_cache=None) -> float | None:
                 bbox_target = inst_root
         try:
             bound = bbox_cache.ComputeWorldBound(bbox_target)
-            if not bound.GetRange().IsEmpty():
-                return bound.GetRange().GetMin()[2]
-        except Exception:
-            pass
+            rng = bound.GetRange()
+            # DEBUG
+            print(f"  [BBOX_DEBUG] {bbox_target.GetPath()} bbox_empty={rng.IsEmpty()}"
+                  + ("" if rng.IsEmpty() else f" z_min={rng.GetMin()[2]:.6f} z_max={rng.GetMax()[2]:.6f}"))
+            if not rng.IsEmpty():
+                return rng.GetMin()[2]
+        except Exception as e:
+            print(f"  [BBOX_DEBUG] {prim.GetPath()} bbox error: {e}")
     try:
         mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        return mat.ExtractTranslation()[2]
+        z = mat.ExtractTranslation()[2]
+        print(f"  [ORIGIN_Z_DEBUG] {prim.GetPath()} origin_z={z:.6f}")
+        return z
     except Exception:
         return None
 
