@@ -208,7 +208,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
     """
     Returns:
         util_paths:    list[SdfPath] — util_categories에 속하는 컴포넌트 (배관류)
-        floor_dict:    dict[str, list[SdfPath]] — equipment_categories, 층별 분류
+        floor_dict:    dict[(str, str), list[SdfPath]] — (층 이름, category)별 분류
         no_level_paths: list[SdfPath] — equipment_categories이지만 층 미분류
         other_paths:   list[SdfPath] — util도 equipment도 아닌 나머지 컴포넌트
     """
@@ -277,7 +277,7 @@ def collect_by_util_and_floor(stage, cfg, log=print):
             if level_name:
                 if do_normalize:
                     level_name = _normalize_level_name(level_name)
-                floor_dict.setdefault(level_name, []).append(export_path)
+                floor_dict.setdefault((level_name, cat), []).append(export_path)
             else:
                 no_level_paths.append(export_path)
         else:
@@ -502,12 +502,13 @@ def process_stage(
         log(f"  [UTIL] {len(util_paths)} prims → {util_output}")
         util_count = 1
 
-    # 층별 → {파일명}@{층이름}.usd
-    for level_name, paths in sorted(floor_dict.items()):
+    # 층별 → {파일명}@{층이름}@{category}.usd
+    for (level_name, category), paths in sorted(floor_dict.items()):
         safe_level   = _sanitize_filename(level_name)
-        floor_output = os.path.join(output_directory, f"{safe_basename}{sep}{safe_level}{cfg['output_ext']}")
+        safe_cat     = _sanitize_filename(category)
+        floor_output = os.path.join(output_directory, f"{safe_basename}{sep}{safe_level}{sep}{safe_cat}{cfg['output_ext']}")
         export_paths(stage, paths, floor_output, cfg, log=log)
-        log(f"  [FLOOR:{level_name}] {len(paths)} prims → {floor_output}")
+        log(f"  [FLOOR:{level_name}/{category}] {len(paths)} prims → {floor_output}")
         floor_count += 1
 
     # 층 정보 없는 equipment → {파일명}@no_level.usd
